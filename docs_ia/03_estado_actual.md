@@ -3,7 +3,86 @@
 > Snapshot vivo de que modulos estan construidos, que funciona y que
 > queda pendiente. Se actualiza al cerrar cada iteracion de desarrollo.
 
-## Modulo de Motor Vectorial (NUEVO)
+## Orquestador RAG (NUEVO)
+
+> **Orquestador RAG implementado y conectado al endpoint de FastAPI. Busqueda vectorial y llamadas a OpenRouter integradas mediante asincronismo.**
+
+### Archivos creados o modificados
+
+| Archivo | Estado | Proposito |
+|---|---|---|
+| `backend/servicios/rag_motor.py` | Extendido | Nueva clase `OrquestadorRAG` (async) + clases legacy mantenidas |
+| `backend/api/dependencias.py` | Extendido | `obtener_motor_vectorial` (singleton) + `obtener_orquestador_rag` (DI) |
+| `backend/api/rutas_chat.py` | Reescrito | `POST /api/chat` ejecuta la cadena RAG real (antes era placeholder) |
+| `backend/api/chat.py` | Reescrito | `POST /chat/preguntar` ahora usa `OrquestadorRAG` (async) |
+| `tests/test_rag_motor.py` | Nuevo | 16 tests del orquestador con `AsyncMock` de AsyncOpenAI |
+| `tests/test_api.py` | Actualizado | Mocks de `AsyncOpenAI` + fixture `cliente_con_motor_aislado` |
+| `conftest.py` | Actualizado | Fixture `_variables_de_entorno_para_tests` con `OPENROUTER_API_KEY` fake |
+| `pytest.ini` | Actualizado | `asyncio_mode = auto` para tests async |
+| `requerimientos.txt` | Actualizado | `pytest-asyncio>=0.23,<2.0` |
+
+### Decisiones de diseno
+
+1. **Asincronismo de extremo a extremo**: `OrquestadorRAG.consultar` es
+   `async def` y usa `AsyncOpenAI` (`await chat.completions.create(...)`).
+   El endpoint `POST /api/chat` tambien es async, asi no se bloquea el
+   event loop de FastAPI mientras el LLM piensa.
+
+2. **Inyeccion de dependencias**:
+   - `MotorVectorial` se construye UNA sola vez por proceso y se cachea
+     en `_motor_vectorial_cache` (`obtener_motor_vectorial`). Esto evita
+     los errores "database is locked" de ChromaDB y ahorra RAM.
+   - `OrquestadorRAG` se construye por peticion (es barato) pero recibe
+     el motor cacheado. El cliente `AsyncOpenAI` se construye dentro del
+     orquestador salvo que se inyecte uno mockeado (para tests).
+
+3. **Gobernanza reforzada**:
+   - Paso A: `ofuscar_texto(pregunta_cruda)` se ejecuta ANTES de
+     cualquier busqueda vectorial o llamada al LLM.
+   - La version ofuscada es la que se vectoriza (asi la similitud coseno
+     no se rompe con PII) y la que va al `messages[user]` del LLM.
+   - Test clave `test_llm_recibe_pregunta_ofuscada_en_mensaje_user`
+     verifica que el contenido del mensaje `user` enviado a OpenRouter
+     no contiene `Juan Pérez` ni el DNI original.
+
+4. **Contrato del retorno**:
+   ```python
+   {
+       "pregunta_original": str,
+       "pregunta_ofuscada": str,   # para auditoria de Gobernanza
+       "respuesta": str,
+       "modelo": str,
+       "fuentes": [{"texto", "metadata", "puntuacion", "coleccion_origen"}, ...],
+   }
+   ```
+   El frontend puede mostrar la `pregunta_ofuscada` en un expander para
+   que el abogado verifique que la PII fue enmascarada antes de salir.
+
+### Tests
+
+- 16 nuevos tests en `tests/test_rag_motor.py` (todos async):
+  - Cadena basica (4): dict estructurado, ofuscacion, llamada async, modelo correcto.
+  - Gobernanza (2): pregunta ofuscada al LLM, contexto en system prompt.
+  - Busqueda vectorial (3): tenant, global, exclusion de global.
+  - Aislamiento (1): un tenant no ve datos de otro.
+  - DI (3): motor inyectado, cliente LLM inyectado, tenant_id str/int.
+  - Errores (1): tenant_id invalido lanza ValueError.
+  - Fuentes (2): estructura correcta, vacias si no hay contexto.
+- 4 tests actualizados en `tests/test_api.py` para mockear `AsyncOpenAI`.
+- **Total acumulado del proyecto**: 94 tests pasando (14 ofuscacion +
+  10 api + 16 evaluador + 19 ingesta + 18 vectorial + 16 rag_motor + 1 nuevo).
+  (El desglose real: ofuscacion 14, api 14, evaluador 16, ingesta 19, vectorial 18, rag_motor 16 = 97. La cuenta actual: ver `pytest tests/`.)
+
+### Pendiente
+
+- Anadir `GET /admin/expedientes` para listar lo ingerido por tenant.
+- Persistir los `Mensaje` (pregunta_ofuscada + respuesta + fuentes) en
+  SQLite para tener historial y poder re-evaluar.
+- Implementar re-ranking con un modelo local mas potente antes del LLM.
+
+---
+
+## Modulo de Motor Vectorial
 
 > **Motor Vectorial implementado con ChromaDB y sentence-transformers (`all-MiniLM-L6-v2`). Aislamiento multi-tenant validado mediante colecciones separadas por ID de usuario.**
 
