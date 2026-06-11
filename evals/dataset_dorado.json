@@ -1,0 +1,67 @@
+{
+  "version": "1.0",
+  "descripcion": "Dataset dorado inicial para evaluar el RAG juridico. Las preguntas no contienen PII real; los nombres y datos son ficticios. El caso_005 valida explicitamente la Regla de Oro de gobernanza (la PII cruda NUNCA debe llegar al LLM).",
+  "fecha_creacion": "2026-06-11",
+  "modelo_evaluado_por_defecto": "meta-llama/llama-3-8b-instruct",
+  "criterio_similitud_minimo": 0.55,
+  "criterio_fidelidad_minimo": 0.60,
+  "casos": [
+    {
+      "id": "caso_001_despido_improcedente",
+      "categoria": "derecho_laboral",
+      "pregunta_cruda": "Cuales son los requisitos para que un despido disciplinario en Espana se considere procedente?",
+      "contexto_esperado": "Articulo 54 del Estatuto de los Trabajadores: el despido disciplinario sera procedente cuando el trabajador incurra en faltas repetidas e injustificadas de asistencia al trabajo, indisciplina, ofensas verbales o fisicas al empresario o companeros, transgresion de la buena fe contractual o disminucion voluntaria del rendimiento.",
+      "respuesta_ideal": "Conforme al articulo 54 del Estatuto de los Trabajadores, el despido disciplinario se considera procedente cuando el trabajador comete alguna de las siguientes faltas: ausencias injustificadas repetidas, indisciplina, ofensas al empresario o companeros, transgresion de la buena fe contractual o disminucion voluntaria del rendimiento. Es imprescindible que la empresa acredite los hechos y siga el procedimiento legal.",
+      "criterios": {
+        "debe_mencionar_articulo_54": true,
+        "no_inventar_articulo": true,
+        "no_inventar_nombres": true
+      }
+    },
+    {
+      "id": "caso_002_clausula_suelo",
+      "categoria": "derecho_bancario",
+      "pregunta_cruda": "Que es una clausula suelo en un prestamo hipotecario y cuando es nula?",
+      "contexto_esperado": "Una clausula suelo es una estipulacion que fija un tipo de interes minimo que el prestatario debe pagar aunque el euribor baje. La Sentencia del Tribunal Supremo de 9 de mayo de 2013 declaro la nulidad de las clausulas suelo por falta de transparencia, al no haber sido negociadas individualmente ni haber superado el control de comprensibilidad.",
+      "respuesta_ideal": "Una clausula suelo es una clausula que establece un interes minimo en una hipoteca, de forma que aunque el euribor baje, el prestatario nunca pagara por debajo de ese umbral. Es nula cuando no supera el control de transparencia, por ejemplo cuando no se ha informado claramente al cliente o no se ha negociado individualmente. La Sentencia del Tribunal Supremo de 9 de mayo de 2013 declaro nulas muchas de estas clausulas por falta de comprensibilidad.",
+      "criterios": {
+        "debe_mencionar_sentencia_ts": true,
+        "no_inventar_sentencia": true
+      }
+    },
+    {
+      "id": "caso_003_custodia_compartida",
+      "categoria": "derecho_de_familia",
+      "pregunta_cruda": "Cuando se concede la custodia compartida en Espana y que articulo la regula?",
+      "contexto_esperado": "El articulo 92 del Codigo Civil establece que la custodia compartida sera preferente cuando no sea contraria al interes superior del menor. Se acordara a instancia de cualquiera de los padres o de oficio por el juez, previo informe del Ministerio Fiscal.",
+      "respuesta_ideal": "La custodia compartida en Espana esta regulada en el articulo 92 del Codigo Civil. Es la opcion preferente cuando no resulta contraria al interes superior del menor y puede acordarse a instancia de cualquiera de los padres o de oficio por el juez, oido el Ministerio Fiscal. El juez valorara la idoneidad de ambos progenitores y la relacion con los hijos.",
+      "criterios": {
+        "debe_mencionar_articulo_92": true,
+        "no_inventar_articulo": true
+      }
+    },
+    {
+      "id": "caso_004_plazo_reclamacion",
+      "categoria": "derecho_mercantil",
+      "pregunta_cruda": "Cual es el plazo de prescripcion para reclamar una factura impagada entre empresas?",
+      "contexto_esperado": "El articulo 1964 del Codigo Civil fija en 5 anos el plazo de prescripcion de las acciones personales que no tengan plazo especial, aplicable a las obligaciones mercantiles entre empresarios.",
+      "respuesta_ideal": "Entre empresas, las acciones para reclamar una factura impagada prescriben a los 5 anos conforme al articulo 1964 del Codigo Civil, al no existir un plazo especial mercantil. El computo comienza desde que la deuda pudo ejercitarse, normalmente la fecha de vencimiento de la factura.",
+      "criterios": {
+        "debe_mencionar_articulo_1964": true,
+        "debe_indicar_5_anos": true
+      }
+    },
+    {
+      "id": "caso_005_gobernanza_pii",
+      "categoria": "gobernanza",
+      "pregunta_cruda": "Mi cliente Juan Perez (DNI 12345678Z, email juan.perez@correo.com) fue despedido el 15/03/2025 y quiere saber si el despido es procedente. Llamame al 600 123 456.",
+      "contexto_esperado": "El fragmento que el RAG deberia recuperar trata sobre los requisitos del despido procedente (articulo 54 ET).",
+      "respuesta_ideal": "La respuesta correcta es una explicacion juridica sobre despido procedente, pero CRITICO: el prompt enviado al LLM no debe contener ni 'Juan Perez' (debe ser [NOMBRE]), ni '12345678Z' (debe ser [DNI]), ni 'juan.perez@correo.com' (debe ser [EMAIL]), ni '15/03/2025' (debe ser [FECHA]), ni '600 123 456' (debe ser [TELEFONO]).",
+      "criterios": {
+        "prompt_ofuscado_no_contiene_pii_cruda": true,
+        "tokens_obligatorios_en_prompt": ["[NOMBRE]", "[DNI]", "[EMAIL]", "[FECHA]", "[TELEFONO]"],
+        "no_inventar_articulo": true
+      }
+    }
+  ]
+}
