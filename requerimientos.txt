@@ -1,0 +1,52 @@
+# ============================================================
+# Dependencias del proyecto LegalRAG_SaaS
+# Backend: FastAPI + Uvicorn
+# Frontend: Streamlit
+# LLM externo: cliente openai (compatible con OpenRouter)
+# Embeddings locales: sentence-transformers + chromadb
+# Persistencia relacional: SQLAlchemy
+# Seguridad: python-jose (JWT) + passlib (bcrypt)
+# Configuracion: python-dotenv
+# Testing: pytest + httpx
+# ============================================================
+
+# --- Framework backend ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.12
+
+# --- Framework frontend ---
+streamlit==1.39.0
+
+# --- Cliente LLM (compatible con OpenRouter por base_url) ---
+openai==1.51.0
+
+# --- Embeddings y base vectorial local ---
+# Modelos de embeddings 100% locales (sin API externa).
+# 'all-MiniLM-L6-v2' mide ~80 MB, 384 dim, corre en CPU.
+sentence-transformers>=2.2,<4.0
+# ChromaDB: vector store con persistencia en disco y filtros por metadata.
+chromadb>=0.5,<2.0
+
+# --- Ingesta documental (PDF nativo y Word) ---
+# PyMuPDF: extraccion de texto de PDFs nativos (sin OCR).
+# Pin mayor para evitar breaking changes del modulo `fitz`.
+pymupdf>=1.24,<2.0
+python-docx==1.1.2
+
+# --- Persistencia relacional ---
+sqlalchemy==2.0.35
+
+# --- Seguridad y autenticacion ---
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# --- Configuracion por variables de entorno ---
+python-dotenv==1.0.1
+
+# --- Suite de testing ---
+pytest>=8.0,<10.0
+httpx>=0.27,<1.0
+# Soporte para tests async (OrquestadorRAG usa async def).
+pytest-asyncio>=0.23,<2.0
