@@ -1,0 +1,81 @@
+# ============================================================
+# Archivo de exclusion estricto para LegalRAG_SaaS
+# Bloquea entornos virtuales, secretos, bases de datos locales,
+# caches de Python, indices vectoriales persistentes y pytest.
+# ============================================================
+
+# --- Entorno virtual ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Variables de entorno (secretos) ---
+.env
+.env.*
+!.env.ejemplo
+
+# --- Bases de datos locales ---
+*.db
+*.sqlite3
+*.sqlite
+*.sql
+
+# --- Documentos de prueba (Data Tiering) ---
+# Carpeta raiz de ingesta: contiene leyes_publicas/ (Tier 1)
+# y casos_clientes/ (Tier 3, PII). Todo su contenido es bloqueado.
+datos_prueba/
+!datos_prueba/**/.gitkeep
+
+# Archivos sueltos: ningun documento legal debe commitearse
+# porque pueden contener datos personales de clientes.
+*.pdf
+*.docx
+*.doc
+*.xls
+*.xlsx
+*.odt
+*.rtf
+
+# --- Cache de Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Base vectorial local ChromaDB ---
+# Persistencia por defecto del MotorVectorial: NUNCA subir vectores.
+backend/db/chroma_data/
+chromadb/
+chroma/
+chroma_data/
+*.chroma
+
+# --- Modelos locales grandes (sentence-transformers cache) ---
+modelos_locales/
+hf_cache/
+huggingface/
+
+# --- Reportes y cobertura ---
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# --- Archivos de sistema y editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Builds y dist ---
+build/
+dist/
+*.whl
