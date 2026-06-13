@@ -32,7 +32,22 @@ from chromadb.utils import embedding_functions
 # Nombre canonico de la coleccion global (Tier 1).
 COLECCION_GLOBAL: str = "leyes_globales"
 PREFIJO_COLECCION_TENANT: str = "casos_user_"
-MODELO_EMBEDDINGS_POR_DEFECTO: str = "sentence-transformers/all-MiniLM-L6-v2"
+# Multilingual optimizado para espanol (~470MB, 384 dim). Muy superior
+# a `all-MiniLM-L6-v2` para textos largos en espanol juridico.
+# ATENCION: cambiar de modelo invalida los vectores ya indexados en
+# ChromaDB; tras un upgrade, hay que re-ingestar todos los documentos.
+MODELO_EMBEDDINGS_POR_DEFECTO: str = (
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+
+# Categorias validas para clasificar los chunks ingeridos. Se guardan
+# en la metadata de ChromaDB y el RAG puede filtrar por ellas desde
+# el chat (selector "Contexto" del frontend).
+CATEGORIAS_VALIDAS: tuple[str, ...] = ("Leyes", "Jurisprudencia", "Expediente")
+
+# Marcador especial para que la UI del frontend represente "sin filtro"
+# (busca en todas las categorias). El orquestador lo trata como None.
+CATEGORIA_TODAS: str = "Todas"
 
 # Ruta por defecto de la persistencia ChromaDB: backend/db/chroma_data/.
 _RUTA_PERSISTENCIA_POR_DEFECTO: Path = (
@@ -50,6 +65,8 @@ class FragmentoRecuperado:
     Un chunk relevante devuelto por la busqueda vectorial.
 
     Atributos:
+        id: identificador unico del documento en ChromaDB (util para
+            trazabilidad de auditoria).
         texto: contenido textual del chunk.
         metadata: diccionario con metadatos arbitrarios del chunk
             (archivo origen, tier, indice, etc.).
@@ -59,7 +76,8 @@ class FragmentoRecuperado:
             (util para depurar cuando se mezcla busqueda tenant + global).
     """
 
-    texto: str
+    id: str = ""
+    texto: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     puntuacion: float = 0.0
     coleccion_origen: str = ""
@@ -207,6 +225,7 @@ class MotorVectorial:
         nombre_coleccion: str,
         incluir_global: bool = True,
         top_k: int = 5,
+        filtro_categoria: str | None = None,
     ) -> list[FragmentoRecuperado]:
         """
         Vectoriza `pregunta` y devuelve los Top-K chunks mas relevantes.
@@ -214,6 +233,14 @@ class MotorVectorial:
         Por defecto consulta AMBAS colecciones:
           - La del tenant (`nombre_coleccion`, ej. `casos_user_42`).
           - La global de leyes publicas (si `incluir_global=True`).
+
+        Si se indica `filtro_categoria`, ChromaDB solo devuelve chunks
+        cuya metadata `categoria` coincida exactamente (filtro `where`
+        nativo del vector store, no post-procesado en Python).
+
+        Categorias validas: `Leyes`, `Jurisprudencia`, `Expediente`.
+        Pasar `None` (o `CATEGORIA_TODAS` que el orquestador normaliza
+        a None) significa "sin filtro de categoria".
 
         Los resultados se fusionan, se ordenan por relevancia
         descendente y se truncan a `top_k`.
@@ -227,6 +254,19 @@ class MotorVectorial:
         if top_k <= 0:
             raise ValueError("top_k debe ser positivo")
 
+        # Normalizamos el marcador "Todas" a None (sin filtro).
+        filtro_efectivo: str | None = filtro_categoria
+        if filtro_efectivo == CATEGORIA_TODAS or filtro_efectivo == "":
+            filtro_efectivo = None
+
+        # Validacion defensiva: si llega una categoria, debe estar en
+        # el set valido. Cualquier otra cosa es bug del caller.
+        if filtro_efectivo is not None and filtro_efectivo not in CATEGORIAS_VALIDAS:
+            raise ValueError(
+                f"filtro_categoria invalido: {filtro_efectivo!r}. "
+                f"Valores validos: {CATEGORIAS_VALIDAS} o None."
+            )
+
         resultados: list[FragmentoRecuperado] = []
 
         # 1) Busqueda en la coleccion del tenant.
@@ -235,7 +275,13 @@ class MotorVectorial:
                 name=nombre_coleccion, embedding_function=self._ef
             )
             resultados.extend(
-                self._consultar(tenant, pregunta, top_k, nombre_coleccion)
+                self._consultar(
+                    tenant,
+                    pregunta,
+                    top_k,
+                    nombre_coleccion,
+                    filtro_categoria=filtro_efectivo,
+                )
             )
 
         # 2) Busqueda opcional en la coleccion global.
@@ -246,7 +292,11 @@ class MotorVectorial:
                 )
                 resultados.extend(
                     self._consultar(
-                        global_col, pregunta, top_k, COLECCION_GLOBAL
+                        global_col,
+                        pregunta,
+                        top_k,
+                        COLECCION_GLOBAL,
+                        filtro_categoria=filtro_efectivo,
                     )
                 )
 
@@ -264,10 +314,15 @@ class MotorVectorial:
         pregunta: str,
         top_k: int,
         coleccion_origen: str,
+        filtro_categoria: str | None = None,
     ) -> list[FragmentoRecuperado]:
         """Ejecuta `coleccion.query` y mapea el resultado a FragmentoRecuperado."""
+        # ChromaDB acepta `where={"campo": "valor"}` para filtrar por metadata.
+        kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": top_k}
+        if filtro_categoria is not None:
+            kwargs["where"] = {"categoria": filtro_categoria}
         try:
-            respuesta = coleccion.query(query_texts=[pregunta], n_results=top_k)
+            respuesta = coleccion.query(**kwargs)
         except Exception as exc:  # noqa: BLE001 - chromadb lanza varias
             raise ErrorMotorVectorial(
                 f"Error consultando la coleccion {coleccion_origen}: {exc}"
@@ -276,15 +331,18 @@ class MotorVectorial:
         documentos = (respuesta.get("documents") or [[]])[0]
         distancias = (respuesta.get("distances") or [[]])[0]
         metadatas = (respuesta.get("metadatas") or [[]])[0]
+        ids = (respuesta.get("ids") or [[]])[0]
 
         resultados: list[FragmentoRecuperado] = []
         for i, texto in enumerate(documentos):
             distancia = float(distancias[i]) if i < len(distancias) else 1.0
             metadata = dict(metadatas[i]) if i < len(metadatas) else {}
+            id_doc = str(ids[i]) if i < len(ids) else ""
             # Distancia coseno en [0, 2] -> relevancia en [0, 1].
             puntuacion = max(0.0, min(1.0, 1.0 - distancia))
             resultados.append(
                 FragmentoRecuperado(
+                    id=id_doc,
                     texto=texto,
                     metadata=metadata,
                     puntuacion=puntuacion,
@@ -295,6 +353,8 @@ class MotorVectorial:
 
 
 __all__ = [
+    "CATEGORIA_TODAS",
+    "CATEGORIAS_VALIDAS",
     "COLECCION_GLOBAL",
     "MODELO_EMBEDDINGS_POR_DEFECTO",
     "ErrorMotorVectorial",
