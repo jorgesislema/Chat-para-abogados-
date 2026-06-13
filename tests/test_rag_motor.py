@@ -10,6 +10,8 @@ Cubre:
     crea uno nuevo por accidente.
   - Aislamiento de tenant: la busqueda usa la coleccion `casos_user_<id>`.
   - Sin llamada real a OpenRouter: AsyncOpenAI es un Mock.
+  - Resiliencia (Fase 7): reintentos exponenciales sobre errores
+    temporales y fail-fast sobre errores duros del proveedor.
 
 El cliente AsyncOpenAI es siempre un mock (AsyncMock) para evitar
 consumo de tokens. El motor vectorial es REAL pero contra un
@@ -23,13 +25,31 @@ from unittest.mock import AsyncMock, MagicMock
 import chromadb
 import pytest
 from chromadb.config import Settings
+from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
 
 from backend.db.vectorial import (
     COLECCION_GLOBAL,
     MotorVectorial,
     nombre_coleccion_para_tenant,
 )
-from backend.servicios.rag_motor import OrquestadorRAG
+from backend.servicios.rag_motor import (
+    MENSAJE_DEGRADACION_IA,
+    OrquestadorRAG,
+)
+
+
+@pytest.fixture()
+def _sin_espera_tenacity(monkeypatch):
+    """
+    Anula los `sleep` que `tenacity` programa entre reintentos
+    (`wait_exponential(multiplier=1, min=2, max=10)` -> 2s + 4s = 6s).
+
+    Sin este fixture la suite tardaria minutos en lugar de milisegundos.
+    En tenacity 9.x, `wait_exponential` invoca `tenacity.nap.sleep`
+    (que por defecto delega a `time.sleep`).
+    """
+    monkeypatch.setattr("tenacity.nap.sleep", lambda *a, **kw: None)
+    yield
 
 
 # ============================================================
@@ -55,10 +75,29 @@ def motor(cliente_chroma_efimero, embedding_function_compartido) -> MotorVectori
 
 @pytest.fixture()
 def cliente_llm_mock() -> MagicMock:
-    """Mock de AsyncOpenAI: `chat.completions.create` retorna texto fijo."""
+    """Mock de AsyncOpenAI: `chat.completions.create` retorna texto fijo.
+
+    Por defecto NO incluye `usage` (los tests de Fase 6 usan
+    `cliente_llm_mock_con_usage` para forzar valores de tokens).
+    """
     respuesta = MagicMock()
     respuesta.choices = [MagicMock()]
     respuesta.choices[0].message.content = "Respuesta del LLM mockeado."
+    respuesta.usage = None  # explicito: no hay metricas en este mock
+
+    cliente = MagicMock()
+    cliente.chat.completions.create = AsyncMock(return_value=respuesta)
+    return cliente
+
+
+@pytest.fixture()
+def cliente_llm_mock_con_usage() -> MagicMock:
+    """Mock de AsyncOpenAI con `usage` poblado para tests de telemetria."""
+    respuesta = MagicMock()
+    respuesta.choices = [MagicMock()]
+    respuesta.choices[0].message.content = "Respuesta del LLM mockeado."
+    respuesta.usage.prompt_tokens = 123
+    respuesta.usage.completion_tokens = 45
 
     cliente = MagicMock()
     cliente.chat.completions.create = AsyncMock(return_value=respuesta)
@@ -86,17 +125,24 @@ async def test_consultar_devuelve_dict_estructurado(orquestador: OrquestadorRAG)
     )
 
     assert isinstance(resultado, dict)
-    assert set(resultado.keys()) == {
+    # El contrato incluye las claves originales + telemetria (Fase 6).
+    for k in (
         "pregunta_original",
         "pregunta_ofuscada",
         "respuesta",
         "modelo",
         "fuentes",
-    }
+        "tokens_prompt",
+        "tokens_completion",
+    ):
+        assert k in resultado, f"Falta la clave {k!r}"
     assert resultado["pregunta_original"] == "Que dice el codigo civil sobre divorcio?"
     assert resultado["respuesta"] == "Respuesta del LLM mockeado."
     assert resultado["modelo"] == "modelo-test"
     assert isinstance(resultado["fuentes"], list)
+    # El mock no setea .usage -> defaults a 0.
+    assert resultado["tokens_prompt"] == 0
+    assert resultado["tokens_completion"] == 0
 
 
 async def test_consultar_ofusca_la_pregunta(orquestador: OrquestadorRAG) -> None:
@@ -115,6 +161,51 @@ async def test_consultar_llama_a_openrouter_async(orquestador: OrquestadorRAG) -
     await orquestador.consultar("Pregunta generica", tenant_id=1)
     cliente_llm = orquestador._cliente_llm  # noqa: SLF001 - test intencional
     cliente_llm.chat.completions.create.assert_awaited_once()
+
+
+async def test_consultar_extrae_tokens_del_usage(
+    motor: MotorVectorial,
+) -> None:
+    """Cuando el LLM devuelve `usage`, el orquestador extrae los tokens."""
+    from backend.servicios.rag_motor import OrquestadorRAG
+
+    respuesta = MagicMock()
+    respuesta.choices = [MagicMock()]
+    respuesta.choices[0].message.content = "ok"
+    respuesta.usage.prompt_tokens = 250
+    respuesta.usage.completion_tokens = 80
+
+    cliente = MagicMock()
+    cliente.chat.completions.create = AsyncMock(return_value=respuesta)
+
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor, cliente_llm=cliente, modelo="m"
+    )
+    resultado = await orquestador.consultar("p", tenant_id=1)
+    assert resultado["tokens_prompt"] == 250
+    assert resultado["tokens_completion"] == 80
+
+
+async def test_consultar_sin_usage_devuelve_tokens_cero(
+    motor: MotorVectorial,
+) -> None:
+    """Si el LLM no devuelve `usage` (ej. modelo antiguo), defaults a 0."""
+    from backend.servicios.rag_motor import OrquestadorRAG
+
+    respuesta = MagicMock()
+    respuesta.choices = [MagicMock()]
+    respuesta.choices[0].message.content = "ok"
+    respuesta.usage = None
+
+    cliente = MagicMock()
+    cliente.chat.completions.create = AsyncMock(return_value=respuesta)
+
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor, cliente_llm=cliente, modelo="m"
+    )
+    resultado = await orquestador.consultar("p", tenant_id=1)
+    assert resultado["tokens_prompt"] == 0
+    assert resultado["tokens_completion"] == 0
 
 
 async def test_consultar_pasa_el_modelo_configurado(
@@ -401,3 +492,312 @@ async def test_fuentes_vacias_si_no_hay_contexto(
     )
     resultado = await orquestador.consultar("pregunta sin contexto", tenant_id=999)
     assert resultado["fuentes"] == []
+
+
+# ============================================================
+# Resiliencia (Fase 7): tenacity + degradacion elegante.
+# ============================================================
+#
+# Reglas bajo prueba:
+#   - Errores temporales (APIConnectionError, RateLimitError,
+#     InternalServerError) disparan hasta 3 reintentos exponenciales.
+#   - Errores duros (AuthenticationError -> 401) NO se reintentan: fail-fast.
+#   - Tras agotar reintentos (o ante error duro), `consultar` retorna
+#     un dict de error controlado con `fuentes` intactas, en vez de
+#     propagar la excepcion.
+
+
+def _cliente_llm_que_falla_con(excepcion: BaseException) -> MagicMock:
+    """
+    Construye un mock de AsyncOpenAI cuyo `chat.completions.create`
+    SIEMPRE lanza la excepcion indicada (sin importar el numero de intento).
+    """
+    cliente = MagicMock()
+    cliente.chat.completions.create = AsyncMock(side_effect=excepcion)
+    return cliente
+
+
+async def test_reintenta_3_veces_ante_api_connection_error(
+    motor: MotorVectorial,
+    _sin_espera_tenacity,
+) -> None:
+    """
+    Ante un `APIConnectionError` (timeout, DNS, red caida) el orquestador
+    debe reintentar la llamada hasta 3 veces (1 intento + 2 reintentos)
+    antes de rendirse.
+    """
+    cliente = _cliente_llm_que_falla_con(
+        APIConnectionError(request=MagicMock())
+    )
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor,
+        cliente_llm=cliente,
+        modelo="m",
+    )
+
+    resultado = await orquestador.consultar("pregunta", tenant_id=1)
+
+    # Verificacion CONTRACTUAL de la resiliencia:
+    # tenacity con stop_after_attempt(3) ejecuta la funcion 3 veces
+    # antes de propagar la excepcion al `try/except` de `consultar`.
+    assert cliente.chat.completions.create.await_count == 3, (
+        f"Se esperaban 3 intentos, hubo "
+        f"{cliente.chat.completions.create.await_count}"
+    )
+
+    # La degradacion elegante debe dispararse tras agotar reintentos.
+    assert resultado["respuesta"] == MENSAJE_DEGRADACION_IA
+
+
+async def test_reintenta_3_veces_ante_rate_limit_error(
+    motor: MotorVectorial,
+    _sin_espera_tenacity,
+) -> None:
+    """`RateLimitError` (429) tambien es transitorio: 3 intentos."""
+    # Usamos `RateLimitError` (subclase de `APIStatusError`) para que
+    # `tenacity.retry_if_exception_type` lo reconozca como transitorio.
+    error_429 = RateLimitError(
+        "Rate limit reached",
+        response=MagicMock(status_code=429),
+        body=None,
+    )
+    cliente = _cliente_llm_que_falla_con(error_429)
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor, cliente_llm=cliente, modelo="m"
+    )
+
+    resultado = await orquestador.consultar("pregunta", tenant_id=1)
+    assert cliente.chat.completions.create.await_count == 3
+    assert resultado["respuesta"] == MENSAJE_DEGRADACION_IA
+
+
+async def test_no_reintenta_ante_authentication_error(
+    motor: MotorVectorial,
+    _sin_espera_tenacity,
+) -> None:
+    """
+    Un 401 (token invalido / expirado) NO se reintenta: reintentar
+    un error de autenticacion es浪费时间. Fail-fast y degradacion.
+    """
+    error_401 = AuthenticationError(
+        "Invalid API key",
+        response=MagicMock(status_code=401),
+        body=None,
+    )
+    cliente = _cliente_llm_que_falla_con(error_401)
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor, cliente_llm=cliente, modelo="m"
+    )
+
+    resultado = await orquestador.consultar("pregunta", tenant_id=1)
+
+    # Exactamente UNA llamada: tenacity no toco el side_effect.
+    assert cliente.chat.completions.create.await_count == 1, (
+        "AuthenticationError (401) debe fallar rapido (fail-fast), "
+        "no reintentar."
+    )
+    assert resultado["respuesta"] == MENSAJE_DEGRADACION_IA
+
+
+async def test_degradacion_mantiene_fuentes_para_telemetria(
+    motor: MotorVectorial,
+    _sin_espera_tenacity,
+) -> None:
+    """
+    Cuando el LLM cae definitivamente, `consultar` NO debe propagar la
+    excepcion (no debe "tirar" FastAPI). Debe retornar el dict de
+    degradacion CONSERVANDO los IDs de las fuentes recuperadas, para
+    que la capa de telemetria registre QUE contexto estaba disponible
+    cuando la IA externa se cayo.
+    """
+    motor.ingestar_chunks(
+        ["Sentencia 2435-17-EP23 sobre prescripcion adquisitiva."],
+        "casos_user_21",
+        metadata={"archivo": "sentencia.pdf", "tier": 3},
+    )
+    cliente = _cliente_llm_que_falla_con(
+        APIConnectionError(request=MagicMock())
+    )
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor,
+        cliente_llm=cliente,
+        modelo="m",
+        incluir_global=False,
+        top_k=1,
+    )
+
+    # Si esto NO lanza, FastAPI sobrevive. La degradacion es elegante.
+    resultado = await orquestador.consultar("prescripcion", tenant_id=21)
+
+    # Contrato intacto: mismas claves que el camino feliz.
+    for k in (
+        "pregunta_original",
+        "pregunta_ofuscada",
+        "respuesta",
+        "modelo",
+        "fuentes",
+        "tokens_prompt",
+        "tokens_completion",
+    ):
+        assert k in resultado, f"Falta la clave {k!r} en la degradacion"
+
+    # La respuesta es el mensaje canonico de degradacion, NO la excepcion.
+    assert resultado["respuesta"] == MENSAJE_DEGRADACION_IA
+    assert "APIConnectionError" not in resultado["respuesta"]
+    assert "Traceback" not in resultado["respuesta"]
+
+    # Telemetria: no consumimos tokens del LLM.
+    assert resultado["tokens_prompt"] == 0
+    assert resultado["tokens_completion"] == 0
+
+    # CRITICO: las fuentes del vector store local se preservan para que
+    # operaciones pueda auditar QUE contexto estaba disponible.
+    assert len(resultado["fuentes"]) == 1
+    fuente = resultado["fuentes"][0]
+    assert fuente["coleccion_origen"] == "casos_user_21"
+    assert "prescripcion" in fuente["texto"]
+    assert fuente["metadata"].get("archivo") == "sentencia.pdf"
+    # El id NO debe estar vacio: es la llave que la telemetria usa.
+    assert fuente["id"], "El id de la fuente no puede ser vacio"
+
+
+async def test_degradacion_con_fuentes_vacias_si_no_hay_contexto(
+    motor: MotorVectorial,
+    _sin_espera_tenacity,
+) -> None:
+    """
+    Si ademas de caer la IA no hay contexto en el vector store, el
+    dict de degradacion debe seguir siendo valido: `fuentes=[]` y
+    sin excepciones lanzadas.
+    """
+    cliente = _cliente_llm_que_falla_con(
+        APIConnectionError(request=MagicMock())
+    )
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor,
+        cliente_llm=cliente,
+        modelo="m",
+        incluir_global=False,
+    )
+
+    resultado = await orquestador.consultar("pregunta", tenant_id=999)
+    assert resultado["fuentes"] == []
+    assert resultado["respuesta"] == MENSAJE_DEGRADACION_IA
+    assert resultado["modelo"] == "m"
+
+
+async def test_recupera_si_un_reintento_funciona(
+    motor: MotorVectorial,
+    _sin_espera_tenacity,
+) -> None:
+    """
+    Caso happy de la resiliencia: el primer intento falla con un
+    error transitorio, el segundo intento tiene exito y se usa
+    ESA respuesta (no la de degradacion).
+    """
+    respuesta_exitosa = MagicMock()
+    respuesta_exitosa.choices = [MagicMock()]
+    respuesta_exitosa.choices[0].message.content = "Respuesta tras reintento."
+    respuesta_exitosa.usage = None
+
+    cliente = MagicMock()
+    # Primer intento: falla. Segundo intento: exito.
+    cliente.chat.completions.create = AsyncMock(
+        side_effect=[
+            APIConnectionError(request=MagicMock()),
+            respuesta_exitosa,
+        ]
+    )
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor, cliente_llm=cliente, modelo="m"
+    )
+
+    resultado = await orquestador.consultar("pregunta", tenant_id=1)
+
+    assert cliente.chat.completions.create.await_count == 2
+    # Se usa la respuesta del reintento exitoso, NO la degradacion.
+    assert resultado["respuesta"] == "Respuesta tras reintento."
+
+
+# ============================================================
+# Resiliencia del constructor (defensa en profundidad).
+# ============================================================
+#
+# Caso real: incompatibilidad `openai==1.51.0` + `httpx>=0.28`
+# (el kwarg `proxies` se renombro a `proxy` y revienta el
+# constructor de AsyncOpenAI). El orquestador NO debe tumbar
+# el servidor: debe sobrevivir en modo degradado y responder
+# con el dict civilizado.
+
+
+def test_constructor_no_explota_si_asyncopenai_falla(
+    motor: MotorVectorial,
+    monkeypatch,
+) -> None:
+    """
+    Si el SDK `AsyncOpenAI` no puede inicializarse (caso real:
+    httpx>=0.28 rompe openai 1.51.0), el constructor debe
+    registrar el error y dejar al orquestador en modo degradado
+    (`_cliente_llm is None`), NO lanzar excepcion.
+    """
+    # Forzamos el fallo que reproduce el bug de produccion:
+    # httpx>=0.28 renombro `proxies` -> `proxy`, y openai 1.51.0
+    # sigue pasando `proxies=...`, lo que hace explotar al
+    # constructor de AsyncClient.
+    def _explota_al_crear_async_openai(*args, **kwargs):  # noqa: ARG001
+        raise TypeError(
+            "AsyncClient.__init__() got an unexpected keyword argument 'proxies'"
+        )
+
+    monkeypatch.setattr(
+        "backend.servicios.rag_motor.AsyncOpenAI",
+        _explota_al_crear_async_openai,
+    )
+
+    # El constructor NO debe lanzar: debe atrapar y degradar.
+    orquestador = OrquestadorRAG(motor_vectorial=motor, modelo="m")
+    assert orquestador._cliente_llm is None  # noqa: SLF001 - test intencional
+
+
+async def test_consultar_degrada_si_cliente_llm_no_se_pudo_crear(
+    motor: MotorVectorial,
+    monkeypatch,
+    _sin_espera_tenacity,
+) -> None:
+    """
+    Cuando el constructor queda en modo degradado (cliente None),
+    `consultar` debe detectar la situacion al primer intento,
+    aplicar los reintentos de tenacity (3 veces) y devolver el
+    dict de degradacion civilizado, NO un 500.
+    """
+    monkeypatch.setattr(
+        "backend.servicios.rag_motor.AsyncOpenAI",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            TypeError("AsyncClient.__init__() got an unexpected keyword argument 'proxies'")
+        ),
+    )
+
+    motor.ingestar_chunks(
+        ["Sentencia sobre prescripcion."],
+        "casos_user_77",
+        metadata={"archivo": "sentencia.pdf"},
+    )
+    orquestador = OrquestadorRAG(
+        motor_vectorial=motor,
+        modelo="m",
+        incluir_global=False,
+        top_k=1,
+    )
+    # Sanity: el constructor sobrevivio en modo degradado.
+    assert orquestador._cliente_llm is None  # noqa: SLF001
+
+    resultado = await orquestador.consultar("prescripcion", tenant_id=77)
+
+    # Contrato intacto: el endpoint recibe un 200 OK con la respuesta
+    # civilizada, no un 500 que tire FastAPI.
+    assert resultado["respuesta"] == MENSAJE_DEGRADACION_IA
+    assert resultado["tokens_prompt"] == 0
+    assert resultado["tokens_completion"] == 0
+    # Las fuentes del contexto local se preservan para la telemetria.
+    assert len(resultado["fuentes"]) == 1
+    assert resultado["fuentes"][0]["coleccion_origen"] == "casos_user_77"
