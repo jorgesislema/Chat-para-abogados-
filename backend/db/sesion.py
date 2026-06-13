@@ -1,24 +1,18 @@
 """
-Configuracion del engine y la sesion de SQLAlchemy.
+Modulo de compatibilidad. La conexion real vive en `backend.db.conexion`.
+
+Este archivo se mantiene para no romper imports previos
+(`from backend.db.sesion import ...`). Las nuevas llamadas deben
+importar directamente desde `backend.db.conexion`.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-
-from backend.core.configuracion import obtener_configuracion
-
-_config = obtener_configuracion()
-engine = create_engine(
-    _config.cadena_bd,
-    connect_args={"check_same_thread": False} if _config.cadena_bd.startswith("sqlite") else {},
-    future=True,
+from backend.db.conexion import (  # noqa: F401 - re-exports
+    SessionLocal,
+    crear_engine,
+    engine,
+    obtener_sesion_bd,
 )
 
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-
-
-def obtener_sesion_bd() -> Session:
-    """Devuelve una nueva sesion. El caller es responsable de cerrarla."""
-    return SessionLocal()
+__all__ = ["SessionLocal", "crear_engine", "engine", "obtener_sesion_bd"]
