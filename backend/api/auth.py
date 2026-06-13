@@ -1,5 +1,12 @@
 """
-Endpoints de autenticacion y registro multi-tenant.
+Endpoints LEGACY de autenticacion y registro multi-tenant.
+
+Pensados para el primer arranque del sistema: crean un tenant y su
+primer usuario administrador. Para la operacion normal (admin que
+crea usuarios, usuarios que hacen login) usar las rutas oficiales:
+
+  - POST /api/auth/token     (rutas_auth.py)  -- login OAuth2
+  - POST /api/admin/usuarios  (rutas_admin.py) -- crear usuarios
 """
 
 from __future__ import annotations
@@ -9,19 +16,21 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.api.esquemas import LoginIn, RegistroTenantIn, TokenOut
+from backend.core.configuracion import obtener_configuracion
 from backend.core.seguridad import (
     crear_token_jwt,
     hashear_contrasena,
     verificar_contrasena,
 )
-from backend.core.configuracion import obtener_configuracion
-from backend.db.modelos import Tenant, Usuario
-from backend.db.sesion import obtener_sesion_bd
+from backend.db.conexion import obtener_sesion_bd
+from backend.db.modelos import ROL_ADMIN, Tenant, Usuario
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/registro", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/registro", response_model=TokenOut, status_code=status.HTTP_201_CREATED
+)
 def registrar_tenant(payload: RegistroTenantIn) -> TokenOut:
     """Crea un tenant nuevo con su primer usuario administrador."""
     bd: Session = obtener_sesion_bd()
@@ -32,9 +41,9 @@ def registrar_tenant(payload: RegistroTenantIn) -> TokenOut:
 
         usuario = Usuario(
             tenant_id=tenant.id,
-            email=payload.email,
-            hash_contrasena=hashear_contrasena(payload.contrasena),
-            rol="admin",
+            username=payload.username,
+            password_hash=hashear_contrasena(payload.contrasena),
+            rol=ROL_ADMIN,
         )
         bd.add(usuario)
         bd.commit()
@@ -44,7 +53,7 @@ def registrar_tenant(payload: RegistroTenantIn) -> TokenOut:
         bd.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email o tenant ya registrados",
+            detail="Username o tenant ya registrados",
         ) from exc
     finally:
         bd.close()
@@ -53,7 +62,7 @@ def registrar_tenant(payload: RegistroTenantIn) -> TokenOut:
         {
             "sub": str(usuario.id),
             "tenant_id": tenant.id,
-            "email": usuario.email,
+            "username": usuario.username,
             "rol": usuario.rol,
         }
     )
@@ -65,14 +74,20 @@ def registrar_tenant(payload: RegistroTenantIn) -> TokenOut:
 
 @router.post("/login", response_model=TokenOut)
 def login(payload: LoginIn) -> TokenOut:
-    """Valida credenciales y emite un JWT."""
+    """Valida credenciales (username + password) y emite un JWT."""
     bd: Session = obtener_sesion_bd()
     try:
-        usuario = bd.query(Usuario).filter(Usuario.email == payload.email).first()
+        usuario = (
+            bd.query(Usuario)
+            .filter(Usuario.username == payload.username)
+            .first()
+        )
     finally:
         bd.close()
 
-    if not usuario or not verificar_contrasena(payload.contrasena, usuario.hash_contrasena):
+    if not usuario or not verificar_contrasena(
+        payload.contrasena, usuario.password_hash
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales invalidas",
@@ -82,7 +97,7 @@ def login(payload: LoginIn) -> TokenOut:
         {
             "sub": str(usuario.id),
             "tenant_id": usuario.tenant_id,
-            "email": usuario.email,
+            "username": usuario.username,
             "rol": usuario.rol,
         }
     )
