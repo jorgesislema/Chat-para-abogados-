@@ -21,6 +21,8 @@ import chromadb
 from chromadb.config import Settings
 
 from backend.db.vectorial import (
+    CATEGORIAS_VALIDAS,
+    CATEGORIA_TODAS,
     COLECCION_GLOBAL,
     ErrorMotorVectorial,
     FragmentoRecuperado,
@@ -354,3 +356,121 @@ def test_puntuacion_esta_normalizada_en_rango_unitario(
     )
     for r in resultados:
         assert 0.0 <= r.puntuacion <= 1.0
+
+
+# ============================================================
+# Filtro por categoria (Anti-Data-Poisoning / selector "Contexto").
+# ============================================================
+#
+# La metadata `categoria` se guarda al ingestar y ChromaDB la filtra
+# en el momento del `query` (no post-procesamos en Python), asi que
+# la latencia no se ve afectada por categorias "ruidosas".
+
+
+def test_filtro_categoria_devuelve_solo_chunks_de_esa_categoria(
+    motor: MotorVectorial,
+) -> None:
+    """Si filtro por 'Leyes', NO aparecen chunks de 'Expediente'."""
+    motor.ingestar_chunks(
+        ["Articulo 1 de la Constitucion: la igualdad es un derecho."],
+        COLECCION_GLOBAL,
+        metadata={"categoria": "Leyes"},
+    )
+    motor.ingestar_chunks(
+        ["Demanda de despido del cliente Juan Perez en 2024."],
+        "casos_user_1",
+        metadata={"categoria": "Expediente"},
+    )
+
+    resultados = motor.buscar_contexto(
+        "derechos del trabajador",
+        "casos_user_1",
+        incluir_global=True,
+        filtro_categoria="Leyes",
+    )
+    assert len(resultados) >= 1
+    for r in resultados:
+        assert r.metadata.get("categoria") == "Leyes"
+        assert "despido" not in r.texto.lower()
+
+
+def test_filtro_categoria_none_no_filtra(motor: MotorVectorial) -> None:
+    """`filtro_categoria=None` (default) devuelve chunks de TODAS las categorias."""
+    motor.ingestar_chunks(
+        ["Ley de contratos del estado."],
+        COLECCION_GLOBAL,
+        metadata={"categoria": "Leyes"},
+    )
+    motor.ingestar_chunks(
+        ["Caso de jurisprudencia sobre incumplimiento contractual."],
+        "casos_user_1",
+        metadata={"categoria": "Jurisprudencia"},
+    )
+    motor.ingestar_chunks(
+        ["Expediente interno del cliente 5."],
+        "casos_user_1",
+        metadata={"categoria": "Expediente"},
+    )
+
+    resultados = motor.buscar_contexto(
+        "contrato",
+        "casos_user_1",
+        incluir_global=True,
+    )
+    categorias = {r.metadata.get("categoria") for r in resultados}
+    # Sin filtro deben verse al menos 2 categorias distintas.
+    assert len(categorias) >= 2
+
+
+def test_filtro_categoria_vacia_se_trata_como_none(motor: MotorVectorial) -> None:
+    """El frontend puede mandar '' o 'Todas'; ambos significan sin filtro."""
+    motor.ingestar_chunks(
+        ["Ley aplicable."],
+        COLECCION_GLOBAL,
+        metadata={"categoria": "Leyes"},
+    )
+    r_vacia = motor.buscar_contexto(
+        "ley", "casos_user_1", incluir_global=True, filtro_categoria=""
+    )
+    r_todas = motor.buscar_contexto(
+        "ley", "casos_user_1", incluir_global=True, filtro_categoria=CATEGORIA_TODAS
+    )
+    # Ambos deben traer el chunk de Leyes (no estan filtrando).
+    assert any(x.metadata.get("categoria") == "Leyes" for x in r_vacia)
+    assert any(x.metadata.get("categoria") == "Leyes" for x in r_todas)
+
+
+def test_filtro_categoria_invalida_lanza_value_error(
+    motor: MotorVectorial,
+) -> None:
+    """Pasar una categoria que no esta en CATEGORIAS_VALIDAS es bug del caller."""
+    motor.ingestar_chunks(["algo"], "casos_user_1")
+    with pytest.raises(ValueError) as exc:
+        motor.buscar_contexto(
+            "x", "casos_user_1", filtro_categoria="Categoria Inventada"
+        )
+    assert "filtro_categoria invalido" in str(exc.value)
+
+
+def test_sin_chunks_de_la_categoria_solicitada_devuelve_vacio(
+    motor: MotorVectorial,
+) -> None:
+    """Si la coleccion no tiene chunks de la categoria pedida, no falla: []."""
+    motor.ingestar_chunks(
+        ["Solo leyes publicas aqui."],
+        COLECCION_GLOBAL,
+        metadata={"categoria": "Leyes"},
+    )
+    resultados = motor.buscar_contexto(
+        "cualquier cosa",
+        "casos_user_1",
+        incluir_global=True,
+        filtro_categoria="Jurisprudencia",
+    )
+    assert resultados == []
+
+
+def test_categorias_validas_contiene_las_tres_esperadas() -> None:
+    """Documenta el set valido para que el frontend lo reuse."""
+    assert CATEGORIAS_VALIDAS == ("Leyes", "Jurisprudencia", "Expediente")
+    assert CATEGORIA_TODAS == "Todas"
