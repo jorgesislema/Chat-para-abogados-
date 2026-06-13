@@ -21,15 +21,40 @@ Modulos exportados:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import MagicMock
 
-from openai import AsyncOpenAI, OpenAI
+from openai import (
+    APIConnectionError,
+    AsyncOpenAI,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from backend.core.configuracion import obtener_configuracion
 from backend.db.vectorial import FragmentoRecuperado, MotorVectorial
 from backend.servicios.ofuscacion import ofuscar_texto
+
+# Logger del modulo: el orquestador registra degradaciones para que
+# operaciones pueda auditar caidas de OpenRouter sin tirar el servidor.
+LOGGER = logging.getLogger(__name__)
+
+# Mensaje canonico devuelto al cliente cuando la IA externa falla
+# definitivamente (tras agotar reintentos o por error duro tipo 401).
+MENSAJE_DEGRADACION_IA: str = (
+    "Error: El servicio de IA externa no respondio tras multiples "
+    "intentos o presento un fallo. Por favor, reintente en unos minutos."
+)
 
 
 # Plantilla canonica del prompt de sistema. Centralizada para que un cambio
@@ -227,10 +252,26 @@ class OrquestadorRAG:
                 os.getenv("OPENROUTER_API_KEY")
                 or configuracion.openrouter_api_key
             )
-            self._cliente_llm = AsyncOpenAI(
-                base_url=_BASE_URL_OPENROUTER,
-                api_key=clave,
-            )
+            try:
+                self._cliente_llm: AsyncOpenAI | None = AsyncOpenAI(
+                    base_url=_BASE_URL_OPENROUTER,
+                    api_key=clave,
+                )
+            except Exception as exc:  # noqa: BLE001 - degradacion controlada
+                # Defensa en profundidad: si el SDK de OpenAI no puede
+                # inicializarse (ej. incompatibilidad con la version de
+                # httpx instalada: `proxies` vs `proxy`), NO dejamos
+                # que el constructor explote y tumbe FastAPI. El
+                # orquestador queda en modo "sin LLM": cualquier
+                # llamada a `consultar` sera interceptada por el
+                # `try/except` de `_llamar_api_con_reintentos` y
+                # resultara en el dict de degradacion civilizado.
+                LOGGER.error(
+                    "OrquestadorRAG: no se pudo inicializar AsyncOpenAI. "
+                    "El orquestador funcionara en modo degradado. error=%s",
+                    exc,
+                )
+                self._cliente_llm = None
 
     @property
     def modelo(self) -> str:
@@ -248,9 +289,18 @@ class OrquestadorRAG:
         self,
         pregunta_cruda: str,
         tenant_id: str | int,
+        categoria: str | None = None,
     ) -> dict[str, Any]:
         """
         Ejecuta la cadena RAG completa y devuelve un dict estructurado.
+
+        Parametros:
+            pregunta_cruda: pregunta del abogado (antes de ofuscar).
+            tenant_id: ID del abogado; la busqueda se acota a su
+                coleccion privada `casos_user_<id>`.
+            categoria: filtro opcional por categoria documental
+                ("Leyes", "Jurisprudencia", "Expediente"). Si es None
+                o la cadena vacia, no se filtra.
 
         Retorna:
             {
@@ -259,7 +309,21 @@ class OrquestadorRAG:
                 "respuesta": str,
                 "modelo": str,
                 "fuentes": list[dict],   # metadata, texto, puntuacion, origen
+                "tokens_prompt": int,
+                "tokens_completion": int,
+                "categoria_filtrada": str | None,
             }
+
+        Resiliencia:
+            La llamada al LLM externo se hace a traves de
+            `_llamar_api_con_reintentos`, decorada con `tenacity` para
+            tolerar errores temporales (conexion, rate limit, 5xx).
+            Si tras agotar los reintentos (o ante un error duro tipo
+            400/401) la API sigue sin responder, este metodo NO
+            propaga la excepcion: retorna un dict de "degradacion
+            elegante" con un mensaje civilizado y `fuentes` intactas
+            para que la telemetria registre el incidente sin tirar
+            el servidor FastAPI.
         """
         # Paso A: ofuscar ANTES de cualquier otra operacion.
         pregunta_ofuscada = ofuscar_texto(pregunta_cruda)
@@ -271,6 +335,7 @@ class OrquestadorRAG:
             nombre_coleccion,
             incluir_global=self._incluir_global,
             top_k=self._top_k,
+            filtro_categoria=categoria,
         )
 
         # Paso C: ensamblar el string de contexto legal.
@@ -286,23 +351,129 @@ class OrquestadorRAG:
             {"role": "user", "content": pregunta_ofuscada},
         ]
 
-        # Paso E: llamada asincrona al LLM.
-        respuesta_llm = await self._cliente_llm.chat.completions.create(
-            model=self._modelo,
-            messages=mensajes,  # type: ignore[arg-type]
-            temperature=self._temperatura,
-            max_tokens=self._max_tokens,
-        )
+        # Paso E: llamada al LLM con reintentos + degradacion elegante.
+        try:
+            respuesta_llm = await self._llamar_api_con_reintentos(mensajes)
+        except Exception as exc:  # noqa: BLE001 - degradacion controlada
+            LOGGER.warning(
+                "OrquestadorRAG: LLM externo no disponible tras reintentos. "
+                "tenant_id=%s error=%s",
+                tenant_id,
+                exc,
+            )
+            return self._construir_dict_degradacion(
+                pregunta_cruda=pregunta_cruda,
+                pregunta_ofuscada=pregunta_ofuscada,
+                fragmentos=fragmentos,
+                categoria=categoria,
+            )
+
         contenido: Any = respuesta_llm.choices[0].message.content
         texto_llm = contenido if isinstance(contenido, str) else str(contenido)
+
+        # Extraccion defensiva del uso de tokens: el SDK de OpenAI los
+        # expone en `respuesta.usage.{prompt,completion}_tokens`. Si el
+        # proveedor no los devuelve (o estamos en un mock sin esa
+        # propiedad), registramos 0.
+        tokens_prompt = 0
+        tokens_completion = 0
+        usage = getattr(respuesta_llm, "usage", None)
+        if usage is not None:
+            tokens_prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+            tokens_completion = int(getattr(usage, "completion_tokens", 0) or 0)
 
         return {
             "pregunta_original": pregunta_cruda,
             "pregunta_ofuscada": pregunta_ofuscada,
             "respuesta": texto_llm,
             "modelo": self._modelo,
+            "tokens_prompt": tokens_prompt,
+            "tokens_completion": tokens_completion,
+            "categoria_filtrada": categoria,
             "fuentes": [
                 {
+                    "id": f.id,
+                    "texto": f.texto,
+                    "metadata": f.metadata,
+                    "puntuacion": f.puntuacion,
+                    "coleccion_origen": f.coleccion_origen,
+                }
+                for f in fragmentos
+            ],
+        }
+
+    # --------------------------------------------------------
+    # Resiliencia: llamada al LLM con reintentos exponenciales.
+    # --------------------------------------------------------
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(
+            (APIConnectionError, RateLimitError, InternalServerError)
+        ),
+    )
+    async def _llamar_api_con_reintentos(
+        self,
+        mensajes: list[dict[str, str]],
+    ) -> Any:
+        """
+        Invoca `chat.completions.create` con reintentos exponenciales.
+
+        Solo se reintenta ante errores temporales del proveedor:
+          - `APIConnectionError` (red, DNS, timeout de conexion).
+          - `RateLimitError` (429).
+          - `InternalServerError` (5xx del lado del proveedor).
+
+        Errores 4xx duros como `AuthenticationError` (401) o
+        `BadRequestError` (400) NO estan en la tupla, por lo que
+        `tenacity` los deja pasar al instante (fail-fast): no tiene
+        sentido reintentar un token invalido o un prompt mal formado.
+
+        Tras 3 intentos fallidos, la excepcion original se re-lanza
+        y es capturada por `consultar` para aplicar la degradacion
+        elegante.
+
+        Si el cliente LLM quedo en `None` (constructor degradado por
+        incompatibilidad del SDK), lanza `APIConnectionError` para
+        que la cadena de reintentos se comporte igual que ante una
+        caida de red.
+        """
+        if self._cliente_llm is None:
+            raise APIConnectionError(request=MagicMock())
+        return await self._cliente_llm.chat.completions.create(
+            model=self._modelo,
+            messages=mensajes,  # type: ignore[arg-type]
+            temperature=self._temperatura,
+            max_tokens=self._max_tokens,
+        )
+
+    def _construir_dict_degradacion(
+        self,
+        pregunta_cruda: str,
+        pregunta_ofuscada: str,
+        fragmentos: list[FragmentoRecuperado],
+        categoria: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Construye el dict de respuesta cuando la IA externa falla.
+
+        Mantiene el mismo contrato que el camino feliz (claves y tipos)
+        para que la capa HTTP/telemetria no se rompa, y conserva los
+        IDs de las `fuentes` para que la auditoria registre QUE
+        contexto estaba disponible cuando la IA se cayo.
+        """
+        return {
+            "pregunta_original": pregunta_cruda,
+            "pregunta_ofuscada": pregunta_ofuscada,
+            "respuesta": MENSAJE_DEGRADACION_IA,
+            "modelo": self._modelo,
+            "tokens_prompt": 0,
+            "tokens_completion": 0,
+            "categoria_filtrada": categoria,
+            "fuentes": [
+                {
+                    "id": f.id,
                     "texto": f.texto,
                     "metadata": f.metadata,
                     "puntuacion": f.puntuacion,
