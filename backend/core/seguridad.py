@@ -74,8 +74,27 @@ def decodificar_token_jwt(token: str) -> dict[str, Any]:
 
 __all__ = [
     "JWTError",
-    "hashear_contrasena",
-    "verificar_contrasena",
     "crear_token_jwt",
     "decodificar_token_jwt",
+    "hashear_contrasena",
+    "hashear_password",
+    "verificar_admin_desde_claims",
+    "verificar_contrasena",
+    "verificar_password",
 ]
+
+
+# ============================================================
+# Aliases en espanol -> en ingles (consistencia con el spec).
+# ============================================================
+
+hashear_password = hashear_contrasena
+verificar_password = verificar_contrasena
+
+
+def verificar_admin_desde_claims(claims: dict) -> bool:
+    """
+    Devuelve True si el payload del JWT pertenece a un usuario con
+    rol 'admin'. Pensado para usarlo en dependencias de FastAPI.
+    """
+    return claims.get("rol") == "admin"
