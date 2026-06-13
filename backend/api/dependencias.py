@@ -62,6 +62,25 @@ def obtener_usuario_actual(token: str = Depends(_esquema_oauth)) -> UsuarioActua
     }
 
 
+def verificar_admin(
+    usuario_actual: UsuarioActual = Depends(obtener_usuario_actual),
+) -> UsuarioActual:
+    """
+    Dependencia RBAC: garantiza que el usuario autenticado tiene
+    rol 'admin'. Devuelve 403 Forbidden en caso contrario.
+
+    Uso:
+        @router.post(..., dependencies=[Depends(verificar_admin)])
+        def mi_endpoint(): ...
+    """
+    if usuario_actual.get("rol") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Se requiere rol de administrador para esta operacion",
+        )
+    return usuario_actual
+
+
 # ============================================================
 # Singletons lazy para no duplicar clientes ChromaDB en el proceso.
 # ============================================================
