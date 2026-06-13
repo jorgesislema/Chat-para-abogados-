@@ -45,9 +45,11 @@ def obtener_configuracion() -> Configuracion:
         secret_key_jwt=os.getenv("SECRET_KEY_JWT", "cambiar-en-produccion"),
         algoritmo_jwt=os.getenv("ALGORITMO_JWT", "HS256"),
         expiracion_token_minutos=int(os.getenv("EXPIRACION_TOKEN_MINUTOS", "60")),
-        cadena_bd=os.getenv("CADENA_BD", "sqlite:///./legalrag.db"),
+        # Default: backend/db/legalrag.db (relativa a la raiz del proyecto).
+        cadena_bd=os.getenv("CADENA_BD", "sqlite:///./backend/db/legalrag.db"),
         ruta_chromadb=os.getenv("RUTA_CHROMADB", "./chromadb"),
         modelo_embeddings=os.getenv(
-            "MODELO_EMBEDDINGS", "sentence-transformers/all-MiniLM-L6-v2"
+            "MODELO_EMBEDDINGS",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         ),
     )
