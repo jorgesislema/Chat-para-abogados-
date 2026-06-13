@@ -1,0 +1,9 @@
+# ============================================================
+# Dependencias MINIMAS del Frontend Streamlit.
+# La UI NO necesita acceso a SQLite, ChromaDB, sentence-transformers
+# ni al cliente OpenAI: todo eso vive en el backend.
+# ============================================================
+
+streamlit==1.39.0
+httpx>=0.27,<1.0
+requests>=2.31,<3.0
