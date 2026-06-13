@@ -73,7 +73,7 @@ def _registrar_y_obtener_token(cliente: TestClient) -> str:
         "/auth/registro",
         json={
             "nombre_tenant": "Bufete Test",
-            "email": "test@bufete.com",
+            "username": "abogado_test",
             "contrasena": "contrasenaSegura123",
         },
     )
@@ -124,7 +124,7 @@ def test_api_chat_salud_sin_token_devuelve_401(cliente: TestClient) -> None:
 def test_registro_y_login_exitosos(cliente: TestClient) -> None:
     payload = {
         "nombre_tenant": "Bufete Demo",
-        "email": "demo@bufete.com",
+        "username": "abogado_demo",
         "contrasena": "contrasenaSegura123",
     }
     r_registro = cliente.post("/auth/registro", json=payload)
@@ -133,7 +133,7 @@ def test_registro_y_login_exitosos(cliente: TestClient) -> None:
 
     r_login = cliente.post(
         "/auth/login",
-        json={"email": payload["email"], "contrasena": payload["contrasena"]},
+        json={"username": payload["username"], "contrasena": payload["contrasena"]},
     )
     assert r_login.status_code == 200
     assert "access_token" in r_login.json()
@@ -142,7 +142,7 @@ def test_registro_y_login_exitosos(cliente: TestClient) -> None:
 def test_registro_duplicado_devuelve_409(cliente: TestClient) -> None:
     payload = {
         "nombre_tenant": "Bufete Unico",
-        "email": "unico@bufete.com",
+        "username": "abogado_unico",
         "contrasena": "contrasenaSegura123",
     }
     cliente.post("/auth/registro", json=payload)
