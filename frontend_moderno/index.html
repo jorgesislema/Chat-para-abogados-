@@ -46,6 +46,11 @@
         </div>
         <button id="btn-nueva" class="btn-primario btn-chico" title="Nueva conversación">+ Nueva</button>
       </div>
+      <nav class="nav-vistas" aria-label="Secciones">
+        <button id="nav-biblioteca" class="nav-btn activo">Biblioteca</button>
+        <button id="nav-asistente" class="nav-btn">Asistente</button>
+        <button id="nav-admin" class="nav-btn" hidden>Admin</button>
+      </nav>
       <div class="barra-busqueda">
         <input id="buscar" type="search" placeholder="Buscar conversaciones…" aria-label="Buscar conversaciones">
       </div>
@@ -73,6 +78,50 @@
     <div id="fondo-barra" class="fondo-barra" hidden></div>
 
     <main class="centro">
+      <!-- Biblioteca -->
+      <div id="panel-biblioteca" class="panel-biblioteca">
+        <div id="bib-lista-vista" class="bib-vista">
+          <header class="chat-cabecera"><h2>Biblioteca jurídica</h2></header>
+          <div class="bib-barra">
+            <input id="bib-q" type="search" placeholder="Busque un documento por nombre, o escriba una frase y pulse Enter para buscar dentro de los textos…" aria-label="Buscar en la biblioteca">
+            <div class="bib-chips" role="group" aria-label="Tipo de documento">
+              <button class="chip" data-cat="" aria-pressed="true">Todo</button>
+              <button class="chip" data-cat="Leyes" aria-pressed="false">Leyes</button>
+              <button class="chip" data-cat="Jurisprudencia" aria-pressed="false">Jurisprudencia</button>
+              <button class="chip" data-cat="Expediente" aria-pressed="false">Expedientes</button>
+            </div>
+            <div id="bib-filtros" class="bib-filtros" hidden>
+              <select id="bib-tribunal" aria-label="Tribunal"><option value="">Todos los tribunales</option></select>
+              <select id="bib-anio" aria-label="Año"><option value="">Todos los años</option></select>
+              <select id="bib-materia" aria-label="Materia"><option value="">Todas las materias</option></select>
+              <button id="bib-limpiar" class="btn-secundario btn-chico">Limpiar filtros</button>
+            </div>
+          </div>
+          <div id="bib-resultados" class="bib-resultados"></div>
+        </div>
+        <div id="bib-visor-vista" class="bib-vista" hidden>
+          <header class="chat-cabecera">
+            <button id="bib-volver" class="btn-secundario btn-chico">← Biblioteca</button>
+            <h2 id="bib-titulo"></h2>
+            <button id="bib-ficha" class="btn-secundario btn-chico" hidden>Editar ficha</button>
+            <button id="bib-renombrar" class="btn-secundario btn-chico" hidden>Renombrar</button>
+          </header>
+          <p id="bib-ficha-linea" class="bib-ficha-linea" hidden></p>
+          <div class="visor-barra">
+            <input id="visor-q" type="search" placeholder="Artículo (ej. 188) o palabra…" aria-label="Buscar en el documento" autocomplete="off">
+            <span id="visor-cont" class="visor-cont" aria-live="polite"></span>
+            <button id="visor-prev" class="btn-secundario btn-chico" aria-label="Anterior">▲</button>
+            <button id="visor-sig" class="btn-secundario btn-chico" aria-label="Siguiente">▼</button>
+            <button id="visor-copiar" class="btn-secundario btn-chico">Copiar artículo</button>
+            <button id="visor-explicar" class="btn-primario btn-chico">Explicar con el asistente</button>
+          </div>
+          <div class="visor-cuerpo">
+            <aside id="visor-indice" class="visor-indice" aria-label="Índice de artículos"></aside>
+            <div id="visor-scroll" class="visor-scroll"><div id="visor-texto" class="visor-texto"></div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Chat -->
       <div id="panel-chat" class="panel-chat">
         <header class="chat-cabecera">
