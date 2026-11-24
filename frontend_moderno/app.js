@@ -36,16 +36,59 @@ function grupoFecha(iso) {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+/* Markdown mínimo y seguro: escapa primero, luego aplica negrita, cursiva, listas y párrafos. */
+function md(texto) {
+  const lineas = esc(texto).split("\n");
+  let html = "", enLista = false;
+  for (const l of lineas) {
+    const item = l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (item) { if (!enLista) { html += "<ul>"; enLista = true; } html += "<li>" + item[1] + "</li>"; continue; }
+    if (enLista) { html += "</ul>"; enLista = false; }
+    html += l.trim() ? "<p>" + l + "</p>" : "";
+  }
+  if (enLista) html += "</ul>";
+  return html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[\s(])\*(?!\s)(.+?)\*/g, "$1<em>$2</em>");
+}
+
+/* ---------- recopilador de logs (cliente) ---------- */
+const nuevoIdLlamada = () => Math.random().toString(16).slice(2, 14);
+function reportarError(datos) {
+  if (!estado.token) return;
+  try {
+    fetch(API + "/api/logs/cliente", {
+      method: "POST", keepalive: true,
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + estado.token },
+      body: JSON.stringify({
+        mensaje: String(datos.mensaje || "").slice(0, 500), origen: String(datos.origen || "").slice(0, 200),
+        ruta_api: String(datos.ruta_api || "").slice(0, 200), estado: datos.estado ?? null,
+        id_llamada: datos.id_llamada || "", pila: String(datos.pila || "").slice(0, 2000),
+      }),
+    }).catch(() => {});
+  } catch { /* un reporte nunca debe romper la app */ }
+}
+window.addEventListener("error", (e) => reportarError({ mensaje: e.message, origen: `${e.filename}:${e.lineno}`, pila: e.error && e.error.stack }));
+window.addEventListener("unhandledrejection", (e) => reportarError({ mensaje: (e.reason && e.reason.message) || String(e.reason), origen: "promesa", pila: e.reason && e.reason.stack }));
+
 async function api(path, opts = {}) {
-  const r = await fetch(API + path, {
-    ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}),
-      ...(estado.token ? { Authorization: "Bearer " + estado.token } : {}) },
-  });
+  const idLlamada = nuevoIdLlamada();
+  let r;
+  try {
+    r = await fetch(API + path, {
+      ...opts,
+      headers: { "Content-Type": "application/json", "X-Id-Llamada": idLlamada, ...(opts.headers || {}),
+        ...(estado.token ? { Authorization: "Bearer " + estado.token } : {}) },
+    });
+  } catch (err) {
+    reportarError({ mensaje: "Sin conexión con el servidor", origen: "red", ruta_api: path, id_llamada: idLlamada });
+    throw new Error("No hay conexión con el servidor. Revise su red e intente de nuevo.");
+  }
   if (r.status === 401) { salir(); throw new Error("Sesión expirada"); }
   if (!r.ok) {
-    let det = ""; try { det = (await r.json()).detail || ""; } catch { det = await r.text(); }
-    throw new Error(det || ("Error " + r.status));
+    let det = ""; try { det = (await r.json()).detail || ""; } catch { det = ""; }
+    if (typeof det !== "string") det = JSON.stringify(det);
+    const id = r.headers.get("X-Id-Llamada") || idLlamada;
+    if (r.status >= 500) reportarError({ mensaje: det || "Error del servidor", origen: "api", ruta_api: path, estado: r.status, id_llamada: id });
+    throw new Error((det || ("Error " + r.status)) + (r.status >= 500 ? ` (ref. ${id})` : ""));
   }
   if (r.status === 204) return null;
   return r.json();
@@ -191,10 +234,11 @@ async function abrirConversacion(id) {
 }
 function burbujaMsg(rol, contenido, hora, denegado = false, fuentes = []) {
   const d = document.createElement("div");
-  d.className = "msg " + rol + (denegado ? " denegdado" : "");
+  d.className = "msg " + rol + (denegado ? " denegado" : "");
   const quien = rol === "user" ? "Usted" : "Asistente";
   const av = document.createElement("span"); av.className = "avatar"; av.textContent = quien;
-  const tx = document.createElement("span"); tx.textContent = contenido;
+  const tx = document.createElement("span"); tx.className = "msg-texto";
+  if (rol === "assistant") tx.innerHTML = md(contenido); else tx.textContent = contenido;
   const h = document.createElement("span"); h.className = "hora"; h.textContent = hora || "";
   d.append(av, tx, h);
   if (rol === "assistant" && contenido) {
@@ -244,15 +288,21 @@ $("form-chat").addEventListener("submit", async (e) => {
     esp.id = "escribiendo"; $("historial").appendChild(esp);
     $("historial").scrollTop = $("historial").scrollHeight;
 
+    const idLlamada = nuevoIdLlamada();
     const r = await fetch(API + "/api/chat/stream", {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + estado.token },
+      method: "POST", headers: { "Content-Type": "application/json", "X-Id-Llamada": idLlamada, Authorization: "Bearer " + estado.token },
       body: JSON.stringify({ pregunta: texto }),
     });
-    if (!r.ok) throw new Error("Error del servidor (" + r.status + ")");
+    if (!r.ok) {
+      reportarError({ mensaje: "Fallo del chat en vivo", origen: "stream", ruta_api: "/api/chat/stream", estado: r.status, id_llamada: r.headers.get("X-Id-Llamada") || idLlamada });
+      throw new Error(`El asistente no pudo responder (código ${r.status}, ref. ${r.headers.get("X-Id-Llamada") || idLlamada}).`);
+    }
     const lector = r.body.getReader(); const dec = new TextDecoder();
     let buf = "", respuesta = "", fuentes = [], denegado = false;
     const divIA = burbujaMsg("assistant", "", "");
-    const spanTx = divIA.querySelector("span:nth-child(2)");
+    const spanTx = divIA.querySelector(".msg-texto");
+    let divPuesto = false;
+    const poner = () => { if (!divPuesto) { $("escribiendo")?.remove(); $("historial").appendChild(divIA); divPuesto = true; } };
     while (true) {
       const { done, value } = await lector.read();
       if (done) break;
@@ -261,10 +311,10 @@ $("form-chat").addEventListener("submit", async (e) => {
       for (const p of partes) {
         const lin = p.trim(); if (!lin.startsWith("data:")) continue;
         const ev = JSON.parse(lin.slice(5));
-        if (ev.tipo === "token") { respuesta += ev.texto || ""; spanTx.textContent = respuesta; $("historial").scrollTop = 999999; }
+        if (ev.tipo === "token") { poner(); respuesta += ev.texto || ""; spanTx.innerHTML = md(respuesta); $("historial").scrollTop = 999999; }
         else if (ev.tipo === "hecho") { fuentes = ev.fuentes || []; }
         else if (ev.tipo === "denegado") { respuesta = ev.respuesta; denegado = true; }
-        else if (ev.tipo === "error") { respuesta = ev.respuesta; }
+        else if (ev.tipo === "error") { respuesta = ev.respuesta; reportarError({ mensaje: String(ev.respuesta || "Error en el stream").slice(0, 300), origen: "stream", ruta_api: "/api/chat/stream", id_llamada: idLlamada }); }
       }
     }
     $("escribiendo")?.remove();
@@ -403,18 +453,21 @@ function abrirAdmin() {
   if (window.innerWidth <= 1100) document.querySelector(".panel-der").style.display = "none";
   cargarAdminTab("usuarios");
 }
+$("btn-volver-chat").addEventListener("click", () => {
+  $("panel-chat").hidden = false; $("panel-admin").hidden = true;
+  document.querySelector(".panel-der").style.display = "";
+});
 document.querySelectorAll("#panel-admin .tab").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("#panel-admin .tab").forEach((x) => x.classList.remove("activo"));
   b.classList.add("activo"); cargarAdminTab(b.dataset.tab);
 }));
 $("chat-titulo").addEventListener("dblclick", () => {
-  if (estado.perfil?.rol === "admin") return;
   $("panel-chat").hidden = false; $("panel-admin").hidden = true;
 });
 async function cargarAdminTab(tab) {
-  for (const t of ["usuarios", "permisos", "docs", "casos", "auditoria", "metricas"])
+  for (const t of ["usuarios", "permisos", "docs", "casos", "auditoria", "metricas", "logs"])
     $("tab-" + t).hidden = t !== tab;
-  const fn = { usuarios: tabUsuarios, permisos: tabPermisos, docs: tabDocs, casos: tabCasos, auditoria: tabAuditoria, metricas: tabMetricas }[tab];
+  const fn = { usuarios: tabUsuarios, permisos: tabPermisos, docs: tabDocs, casos: tabCasos, auditoria: tabAuditoria, metricas: tabMetricas, logs: tabLogs }[tab];
   if (fn) await fn();
 }
 async function tabUsuarios() {
@@ -571,6 +624,37 @@ async function tabMetricas() {
     ? m.documentos_mas_citados.map((d) => `<div class="barra-metrica"><span class="etiqueta">${esc(d.titulo)}</span><span class="barra-ext"><span class="barra-int" style="display:block;width:${Math.round((d.citas / Math.max(1, m.documentos_mas_citados[0].citas)) * 100)}%"></span></span><span class="valor">${d.citas}</span></div>`).join("")
     : "<p>Sin citas registradas todavía.</p>";
   p.innerHTML = h;
+}
+
+async function tabLogs() {
+  const p = $("tab-logs");
+  p.innerHTML = `<h3>Registro de llamadas y errores</h3>
+  <div class="form-linea"><input id="lg-q" placeholder="Buscar (ruta, error, ref.)" aria-label="Buscar en logs">
+  <label><input type="checkbox" id="lg-err" checked> Solo errores</label>
+  <button class="btn-primario btn-chico" id="lg-ver">Actualizar</button>
+  <button class="btn-secundario btn-chico" id="lg-csv">Descargar JSON</button></div>
+  <div id="lg-tabla"></div>`;
+  let ultimo = [];
+  const cargar = async () => {
+    const q = encodeURIComponent($("lg-q").value.trim());
+    const d = await api(`/api/admin/logs?limite=200&solo_errores=${$("lg-err").checked}&q=${q}`);
+    ultimo = d.items;
+    const cont = $("lg-tabla");
+    if (!d.items.length) { cont.innerHTML = '<div class="vacio"><p>Sin eventos con ese filtro.</p></div>'; return; }
+    let h = "<table><tr><th>Hora</th><th>Nivel</th><th>Llamada</th><th>Estado</th><th>ms</th><th>Detalle</th></tr>";
+    for (const e of d.items) {
+      const detalle = e.error ? `${e.error}: ${e.mensaje || ""}` : (e.mensaje || e.origen || "");
+      h += `<tr><td>${esc((e.ts || "").slice(11, 19))}</td><td>${esc(e.nivel)}</td><td>${esc((e.metodo || e.tipo || "") + " " + (e.ruta || e.ruta_api || ""))}<br><small>ref. ${esc(e.id || e.id_llamada || "—")}</small></td><td>${esc(e.estado ?? "")}</td><td>${esc(e.ms ?? "")}</td><td>${esc(String(detalle).slice(0, 200))}</td></tr>`;
+    }
+    cont.innerHTML = h + "</table>";
+  };
+  $("lg-ver").addEventListener("click", () => cargar().catch((e) => toast(e.message)));
+  $("lg-csv").addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(ultimo, null, 2)], { type: "application/json" }));
+    a.download = "logs.json"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+  await cargar();
 }
 
 /* ---------- init ---------- */
