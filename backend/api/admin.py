@@ -54,6 +54,7 @@ from backend.db.vectorial import (
 from backend.servicios.gestion_pdf import (
     ErrorIngestaDocumento,
     extraer_texto_pdf,
+    segmentar_por_articulos,
     segmentar_texto,
 )
 from backend.servicios.telemetria import registrar_evento_admin
@@ -276,6 +277,11 @@ async def cargar_documento(  # noqa: PLR0915 - flujo completo a proposito
             detail="El PDF no produjo texto segmentable",
         )
 
+    # Fase G2: si el texto trae encabezados de articulos, se indexa por
+    # articulo (unidad completa + partes numeradas); si no, chunking legacy.
+    unidades_articulo = segmentar_por_articulos(texto, ley=titulo)
+    usar_articulos = len(unidades_articulo) > 0
+
     metadata = {
         "titulo": titulo,
         "archivo_original": file.filename,
@@ -285,7 +291,26 @@ async def cargar_documento(  # noqa: PLR0915 - flujo completo a proposito
         "subido_por": admin["usuario_id"],
         "hash_archivo": hash_calculado,
     }
-    n_chunks = motor.ingestar_chunks(chunks, nombre_coleccion, metadata=metadata)
+    if usar_articulos:
+        textos = [u["texto"] for u in unidades_articulo]
+        metas = []
+        for u in unidades_articulo:
+            m = dict(metadata)
+            m.update(
+                {
+                    "ley": titulo,
+                    "articulo": u["articulo"],
+                    "parte": u["parte"],
+                    "total_partes": u["total_partes"],
+                    "id_articulo": u["id_articulo"],
+                }
+            )
+            metas.append(m)
+        n_chunks = motor.ingestar_chunks_con_metadata(
+            textos, nombre_coleccion, metadatas=metas
+        )
+    else:
+        n_chunks = motor.ingestar_chunks(chunks, nombre_coleccion, metadata=metadata)
 
     # ---- 6) Persistir el hash en SQLite (orden: tras ingesta OK) ----
     bd = obtener_sesion_bd()
@@ -558,3 +583,100 @@ def matriz_permisos(
             for p in permisos
         ],
     }
+
+
+# ============================================================
+# Libros y documentos: lista, colecciones y borrado (Fase D/F).
+# ============================================================
+
+@router.get("/api/admin/colecciones")
+def listar_colecciones(
+    _admin: UsuarioActual = Depends(verificar_admin),
+    motor: MotorVectorial = Depends(obtener_motor_vectorial),
+) -> dict:
+    """Colecciones existentes en ChromaDB (para la matriz de permisos)."""
+    try:
+        nombres = sorted(c.name for c in motor._cliente.list_collections())
+    except Exception:  # noqa: BLE001
+        nombres = []
+    return {"colecciones": nombres}
+
+
+@router.get("/api/admin/documentos")
+def listar_documentos(
+    _admin: UsuarioActual = Depends(verificar_admin),
+) -> dict:
+    """Documentos ingestados (registro anti-duplicados)."""
+    bd: Session = obtener_sesion_bd()
+    try:
+        filas = (
+            bd.query(DocumentoIngestado)
+            .order_by(DocumentoIngestado.id.desc())
+            .limit(200)
+            .all()
+        )
+    finally:
+        bd.close()
+    return {
+        "items": [
+            {
+                "id": d.id,
+                "hash": d.hash_archivo,
+                "nombre": d.nombre_archivo,
+                "categoria": d.categoria,
+                "destino": d.tenant_id_destino,
+                "fecha": d.fecha_ingesta.isoformat() if d.fecha_ingesta else "",
+            }
+            for d in filas
+        ]
+    }
+
+
+@router.delete(
+    "/api/admin/documentos/{doc_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def borrar_documento(
+    doc_id: int,
+    admin: UsuarioActual = Depends(verificar_admin),
+    motor: MotorVectorial = Depends(obtener_motor_vectorial),
+) -> None:
+    """Borra el registro y todos sus chunks en ChromaDB (por hash)."""
+    bd: Session = obtener_sesion_bd()
+    try:
+        doc = (
+            bd.query(DocumentoIngestado).filter(DocumentoIngestado.id == doc_id).first()
+        )
+        if doc is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Documento no encontrado.",
+            )
+        hash_borrar = doc.hash_archivo
+        nombre = doc.nombre_archivo
+        bd.delete(doc)
+        bd.commit()
+    finally:
+        bd.close()
+
+    # Borra los vectores con ese hash en todas las colecciones.
+    try:
+        for c in motor._cliente.list_collections():
+            col = motor._cliente.get_collection(
+                name=c.name, embedding_function=motor._ef
+            )
+            try:
+                col.delete(where={"hash_archivo": hash_borrar})
+            except Exception:  # noqa: BLE001 - coleccion sin ese campo
+                continue
+    except Exception:  # noqa: BLE001 - Chroma no disponible
+        pass
+
+    try:
+        registrar_evento_admin(
+            tenant_id=str(admin["tenant_id"]),
+            accion="borrar_documento",
+            detalle=f"nombre={nombre!r} hash={hash_borrar[:12]}",
+            actor_usuario_id=admin["usuario_id"],
+        )
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("No se pudo auditar borrar_documento %s", doc_id)

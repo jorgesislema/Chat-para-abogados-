@@ -29,28 +29,33 @@ VALOR_DEFECTO_INSEGURO = "cambiar-en-produccion"
 LONGITUD_MINIMA_JWT = 32
 
 # Proveedores LLM soportados (todos con API compatible OpenAI).
+# Endpoints reales en uso por el bufete:
+#   - sensenova: https://token.sensenova.ai/v1
+#   - seek:      https://100milionseek.top/v1
 #   - openrouter: https://openrouter.ai/api/v1 (defecto historico)
-#   - sensenova:  https://api.sensenova.cn/compatible-mode/v1
 #   - hms:        configurable via LLM_BASE_URL (nube Huawei / gateway propio)
 #   - custom:     cualquier endpoint compatible via LLM_BASE_URL
 PROVEEDOR_OPENROUTER = "openrouter"
 PROVEEDOR_SENSENOVA = "sensenova"
+PROVEEDOR_SEEK = "seek"
 PROVEEDOR_HMS = "hms"
 PROVEEDOR_CUSTOM = "custom"
 
 _URLS_POR_DEFECTO: dict[str, str] = {
     PROVEEDOR_OPENROUTER: "https://openrouter.ai/api/v1",
-    PROVEEDOR_SENSENOVA: "https://api.sensenova.cn/compatible-mode/v1",
+    PROVEEDOR_SENSENOVA: "https://token.sensenova.ai/v1",
+    PROVEEDOR_SEEK: "https://100milionseek.top/v1",
     PROVEEDOR_HMS: "https://api.hms.ai/v1",
     PROVEEDOR_CUSTOM: "",
 }
 
 
 def _resolver_llm_api_key() -> str:
-    """Prioridad: LLM_API_KEY > SENSENOVA_API_KEY > HMS_API_KEY > OPENROUTER_API_KEY."""
+    """Prioridad: LLM_API_KEY > SENSENOVA_API_KEY > SEEK_API_KEY > HMS_API_KEY > OPENROUTER_API_KEY."""
     return (
         os.getenv("LLM_API_KEY", "")
         or os.getenv("SENSENOVA_API_KEY", "")
+        or os.getenv("SEEK_API_KEY", "")
         or os.getenv("HMS_API_KEY", "")
         or os.getenv("OPENROUTER_API_KEY", "")
     )
@@ -71,6 +76,8 @@ def _resolver_llm_modelo(proveedor: str) -> str:
         return explicito
     if proveedor == PROVEEDOR_SENSENOVA:
         return "SenseNova-V6-Pro"
+    if proveedor == PROVEEDOR_SEEK:
+        return "deepseek-chat"
     return "meta-llama/llama-3-8b-instruct"
 
 

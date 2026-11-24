@@ -215,4 +215,118 @@ __all__ = [
     "extraer_texto_pdf",
     "extraer_texto_docx",
     "segmentar_texto",
+    "segmentar_por_articulos",
 ]
+
+
+# ============================================================
+# Segmentacion por articulo (Fase G2: articulos completos).
+# ============================================================
+
+import re as _re
+
+# Encabezados de ley: "Art. 54", "Art 54.-", "Artículo 54", "ARTICULO 12".
+_PATRON_ENCABEZADO_ARTICULO = _re.compile(
+    r"(?m)^\s*(?:Art\.?|Artículo|ARTICULO)\s+(\d{1,4})\s*\.?-?\s*(.*)$"
+)
+
+# Incisos/parrafos para subdividir articulos muy largos sin cortar frases.
+_PATRON_FRASE = _re.compile(r"(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ0-9\"“(\-])")
+
+
+def _slug(texto: str) -> str:
+    base = _re.sub(r"[^a-z0-9]+", "-", (texto or "").lower()).strip("-")
+    return base[:60] or "doc"
+
+
+def _dividir_respetando_frases(texto: str, max_chars: int) -> list[str]:
+    """Divide por parrafos y, si hace falta, por frases. Nunca a media frase."""
+    partes: list[str] = []
+    actual = ""
+    for parrafo in _re.split(r"\n\s*\n", texto):
+        parrafo = parrafo.strip()
+        if not parrafo:
+            continue
+        candidato = (actual + "\n\n" + parrafo).strip() if actual else parrafo
+        if len(candidato) <= max_chars:
+            actual = candidato
+            continue
+        if actual:
+            partes.append(actual)
+            actual = ""
+        if len(parrafo) <= max_chars:
+            actual = parrafo
+            continue
+        # Parrafo gigante: corta por frases.
+        trozo = ""
+        for frase in _PATRON_FRASE.split(parrafo):
+            frase = frase.strip()
+            if not frase:
+                continue
+            cand = (trozo + " " + frase).strip() if trozo else frase
+            if len(cand) <= max_chars:
+                trozo = cand
+            else:
+                if trozo:
+                    partes.append(trozo)
+                trozo = frase
+        actual = trozo
+    if actual:
+        partes.append(actual)
+    return [p for p in partes if p]
+
+
+def segmentar_por_articulos(
+    texto: str,
+    ley: str = "",
+    max_chars: int = 3000,
+) -> list[dict]:
+    """
+    Divide un texto legal por articulos (Fase G2).
+
+    Cada articulo es una unidad: si supera `max_chars` se divide por
+    incisos/parrafos (nunca a media frase) y las partes se numeran
+    ("parte 2 de 3"). Retorna dicts:
+
+        {"texto": ..., "articulo": 54, "parte": 1, "total_partes": 2,
+         "id_articulo": "<slug-ley>:art-54", "ley": <ley>}
+
+    Si no se detectan al menos 2 encabezados, retorna [] para que el
+    caller use `segmentar_texto` como fallback.
+    """
+    if not texto or not texto.strip():
+        return []
+    matches = list(_PATRON_ENCABEZADO_ARTICULO.finditer(texto))
+    if not matches:
+        return []
+    if len(matches) < 2 and len(texto.strip()) <= max_chars:
+        # Sin varios articulos y cabe entero: no hay nada que partir.
+        return []
+
+    slug_ley = _slug(ley)
+    unidades: list[dict] = []
+    for i, m in enumerate(matches):
+        numero = int(m.group(1))
+        inicio = m.start()
+        fin = matches[i + 1].start() if i + 1 < len(matches) else len(texto)
+        cuerpo = texto[inicio:fin].strip()
+        if not cuerpo:
+            continue
+        id_articulo = f"{slug_ley}:art-{numero}"
+        partes = (
+            [cuerpo] if len(cuerpo) <= max_chars
+            else _dividir_respetando_frases(cuerpo, max_chars)
+        )
+        total = len(partes)
+        for j, parte in enumerate(partes, start=1):
+            unidades.append(
+                {
+                    "texto": parte,
+                    "articulo": numero,
+                    "parte": j,
+                    "total_partes": total,
+                    "id_articulo": id_articulo,
+                    "ley": ley,
+                }
+            )
+    return unidades

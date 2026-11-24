@@ -215,6 +215,36 @@ class MotorVectorial:
         coleccion.add(documents=chunks, ids=ids, metadatas=metadatas)
         return len(chunks)
 
+    def ingestar_chunks_con_metadata(
+        self,
+        chunks: list[str],
+        nombre_coleccion: str,
+        metadatas: list[dict[str, Any]],
+    ) -> int:
+        """
+        Ingesta con metadata por chunk (Fase G2: articulos y partes).
+
+        Cada chunk lleva su propio dict (ej. articulo/parte/id_articulo);
+        se anaden `indice` y `coleccion` como en `ingestar_chunks`.
+        """
+        if not chunks:
+            return 0
+        if not nombre_coleccion or not nombre_coleccion.strip():
+            raise ErrorMotorVectorial("nombre_coleccion es obligatorio")
+        if len(metadatas) != len(chunks):
+            raise ErrorMotorVectorial("chunks y metadatas deben tener igual longitud")
+
+        coleccion = self.obtener_o_crear_coleccion(nombre_coleccion)
+        ids = [f"{nombre_coleccion}_{uuid.uuid4().hex[:12]}" for _ in chunks]
+        finales: list[dict[str, Any]] = []
+        for i, meta in enumerate(metadatas):
+            meta_base = dict(meta or {})
+            meta_base["indice"] = i
+            meta_base["coleccion"] = nombre_coleccion
+            finales.append(meta_base)
+        coleccion.add(documents=chunks, ids=ids, metadatas=finales)
+        return len(chunks)
+
     # --------------------------------------------------------
     # Busqueda.
     # --------------------------------------------------------
@@ -369,8 +399,7 @@ class MotorVectorial:
         resultados.sort(key=lambda f: f.puntuacion, reverse=True)
         return resultados[:top_k]
 
-    def mejor_puntuacion_en(
-        self,
+    def mejor_puntuacion_en(        self,
         pregunta: str,
         colecciones: list[str],
         filtro_categoria: str | None = None,
@@ -406,6 +435,42 @@ class MotorVectorial:
                 puntuacion = max(0.0, min(1.0, 1.0 - float(distancias[0])))
                 mejor = max(mejor, puntuacion)
         return mejor
+
+    def obtener_articulo(
+        self, id_articulo: str, colecciones: list[str]
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Recupera el ARTICULO COMPLETO por `id_articulo` (Fase G2).
+
+        Junta todas sus partes en orden (`parte` 1..N) aunque el
+        vectorial solo haya matcheado una. Retorna (texto, metadata
+        de la primera parte). Si no existe, ("", {}).
+        """
+        partes: list[tuple[int, str, dict[str, Any]]] = []
+        for nombre in colecciones:
+            if not self.coleccion_existe(nombre):
+                continue
+            try:
+                coleccion = self._cliente.get_collection(
+                    name=nombre, embedding_function=self._ef
+                )
+                resp = coleccion.get(where={"id_articulo": id_articulo})
+            except Exception:  # noqa: BLE001 - se ignora y se sigue
+                continue
+            docs = resp.get("documents") or []
+            metas = resp.get("metadatas") or []
+            for doc, meta in zip(docs, metas):
+                meta = dict(meta or {})
+                try:
+                    orden = int(meta.get("parte", 1))
+                except (TypeError, ValueError):
+                    orden = 1
+                partes.append((orden, doc, meta))
+        if not partes:
+            return "", {}
+        partes.sort(key=lambda t: t[0])
+        texto = "\n\n".join(p[1] for p in partes).strip()
+        return texto, partes[0][2]
 
     # --------------------------------------------------------
     # Utilidades internas.
