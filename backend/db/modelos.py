@@ -328,3 +328,49 @@ __all__ = [
     "Tenant",
     "Usuario",
 ]
+
+
+class TextoDocumento(Base):
+    """
+    Texto completo de un documento ingestado, para la Biblioteca (visor).
+
+    El vector store solo guarda pedazos; el visor necesita el texto entero
+    y la posicion de cada articulo para saltar a "Art. 6". Se guarda al
+    ingestar y, para documentos viejos, se reconstruye la primera vez que
+    alguien los abre.
+    """
+
+    __tablename__ = "textos_documento"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hash_archivo: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    titulo: Mapped[str] = mapped_column(String(500), nullable=False)
+    texto: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON: [{"etiqueta": "Art. 6", "numero": "6", "pos": 1234}, ...]
+    articulos_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
+class FichaDocumento(Base):
+    """
+    Datos para filtrar la Biblioteca: tribunal, anio, materia y numero de caso.
+
+    Se extraen del texto al ingestar (o la primera vez que se abre el
+    documento) y el admin puede corregirlos.
+    """
+
+    __tablename__ = "fichas_documento"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hash_archivo: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    tribunal: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    anio: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    materia: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    numero_proceso: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    tema: Mapped[str] = mapped_column(String(600), nullable=False, default="")
