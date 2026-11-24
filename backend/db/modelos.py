@@ -11,10 +11,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
 
-# Roles validos en el sistema (RBAC).
+# Roles validos en el sistema (RBAC, Fase 2).
+#   admin:   UNICO que crea/edita/borra usuarios, sube/borra libros y
+#            documentos, y decide QUE puede ver cada usuario o grupo.
+#   abogado: solo consulta y chatea, y solo sobre lo permitido.
+#   cliente: solo consulta, y solo sobre sus propios casos (sin acceso
+#            a la base global de leyes salvo permiso explicito).
 ROL_ADMIN: str = "admin"
 ROL_ABOGADO: str = "abogado"
-ROLES_VALIDOS: tuple[str, ...] = (ROL_ADMIN, ROL_ABOGADO)
+ROL_CLIENTE: str = "cliente"
+ROLES_VALIDOS: tuple[str, ...] = (ROL_ADMIN, ROL_ABOGADO, ROL_CLIENTE)
 
 
 def _utcnow() -> datetime:
@@ -62,6 +68,9 @@ class Usuario(Base):
     rol: Mapped[str] = mapped_column(
         String(40), default=ROL_ABOGADO, nullable=False
     )
+    # Grupo opcional (ej. "laboral-quito") para permisos por grupo:
+    # un Permiso con `grupo` aplica a todos los usuarios del grupo.
+    grupo: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
     fecha_alta: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False
     )
@@ -186,13 +195,52 @@ class DocumentoIngestado(Base):
     )
 
 
+class Permiso(Base):
+    """
+    Permiso documento/libro/caso <-> usuario o grupo (Fase 2).
+
+    Solo el admin crea/edita/borra estas filas. El filtro se aplica
+    DENTRO de la busqueda vectorial (`backend/servicios/permisos.py`
+    + `MotorVectorial.buscar_en_colecciones`): un usuario NUNCA recibe
+    texto de algo que no puede ver.
+
+    - `usuario_id` o `grupo` (al menos uno; si ambos, aplica si coincide
+      cualquiera): a quien se concede/deniega.
+    - `recurso_tipo`: "coleccion" (ej. `casos_user_7`, `leyes_globales`)
+      o "documento" (un `hash_archivo` concreto de `documentos_ingestados`).
+    - `recurso_id`: nombre de la coleccion o hash del documento.
+    - `puede_ver`: True concede, False deniega explicitamente (el deny
+      gana sobre el grant, salvo la base propia/global del abogado).
+    """
+
+    __tablename__ = "permisos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    usuario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuarios.id"), nullable=True, index=True, default=None
+    )
+    grupo: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
+    recurso_tipo: Mapped[str] = mapped_column(String(32), nullable=False)
+    recurso_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    puede_ver: Mapped[bool] = mapped_column(nullable=False, default=True)
+    creado_por: Mapped[int | None] = mapped_column(nullable=True, default=None)
+    fecha_alta: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
 __all__ = [
     "DocumentoIngestado",
     "Expediente",
     "Mensaje",
+    "Permiso",
     "RegistroAuditoria",
     "ROL_ABOGADO",
     "ROL_ADMIN",
+    "ROL_CLIENTE",
     "ROLES_VALIDOS",
     "Tenant",
     "Usuario",

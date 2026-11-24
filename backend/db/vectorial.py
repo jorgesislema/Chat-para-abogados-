@@ -305,6 +305,109 @@ class MotorVectorial:
         return resultados[:top_k]
 
     # --------------------------------------------------------
+    # Busqueda permiso-aware (Fase 2).
+    # --------------------------------------------------------
+
+    def buscar_en_colecciones(
+        self,
+        pregunta: str,
+        colecciones: list[str],
+        top_k: int = 5,
+        filtro_categoria: str | None = None,
+        where_por_coleccion: dict[str, dict[str, Any]] | None = None,
+    ) -> list[FragmentoRecuperado]:
+        """
+        Busca SOLO en las colecciones indicadas (lista explicita ya
+        filtrada por `backend/servicios/permisos.py`).
+
+        El filtro de permisos se aplica DENTRO del vector store:
+          - Solo se consultan las colecciones de la lista (nunca se
+            abre una coleccion fuera de ella para traer texto).
+          - `where_por_coleccion` permite un filtro `where` nativo de
+            ChromaDB por coleccion (ej. `{"hash_archivo": {"$in": [...]}}`
+            para conceder un documento concreto dentro de una coleccion
+            ajena). Se combina con `filtro_categoria` mediante `$and`.
+            El filtrado ocurre en el servidor: los chunks descartados
+            por `where` nunca llegan al proceso Python.
+
+        NOTA: la deteccion de "existe contenido restringido" va por
+        `mejor_puntuacion_en`, que no devuelve texto.
+        """
+        if not pregunta or not pregunta.strip():
+            return []
+        if top_k <= 0:
+            raise ValueError("top_k debe ser positivo")
+
+        filtro_efectivo: str | None = filtro_categoria
+        if filtro_efectivo == CATEGORIA_TODAS or filtro_efectivo == "":
+            filtro_efectivo = None
+        if filtro_efectivo is not None and filtro_efectivo not in CATEGORIAS_VALIDAS:
+            raise ValueError(
+                f"filtro_categoria invalido: {filtro_efectivo!r}. "
+                f"Valores validos: {CATEGORIAS_VALIDAS} o None."
+            )
+
+        resultados: list[FragmentoRecuperado] = []
+        for nombre in colecciones:
+            if not self.coleccion_existe(nombre):
+                continue
+            coleccion = self._cliente.get_collection(
+                name=nombre, embedding_function=self._ef
+            )
+            where_extra = (where_por_coleccion or {}).get(nombre)
+            resultados.extend(
+                self._consultar(
+                    coleccion,
+                    pregunta,
+                    top_k,
+                    nombre,
+                    filtro_categoria=filtro_efectivo,
+                    where_extra=where_extra,
+                )
+            )
+
+        resultados.sort(key=lambda f: f.puntuacion, reverse=True)
+        return resultados[:top_k]
+
+    def mejor_puntuacion_en(
+        self,
+        pregunta: str,
+        colecciones: list[str],
+        filtro_categoria: str | None = None,
+    ) -> float:
+        """
+        Indica si hay contenido relevante en las colecciones indicadas
+        SIN devolver texto (para decidir "sin acceso" sin filtrar).
+
+        Retorna la mejor puntuacion en [0, 1] (0.0 si no hay nada).
+        El caller compara contra un umbral y, si lo supera, responde
+        con el mensaje canned de denegacion. El texto del documento
+        prohibido NUNCA sale de ChromaDB hacia Python mas alla de la
+        puntuacion.
+        """
+        if not pregunta or not pregunta.strip():
+            return 0.0
+        mejor = 0.0
+        for nombre in colecciones:
+            if not self.coleccion_existe(nombre):
+                continue
+            try:
+                coleccion = self._cliente.get_collection(
+                    name=nombre, embedding_function=self._ef
+                )
+                kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": 1}
+                if filtro_categoria not in (None, "", CATEGORIA_TODAS):
+                    kwargs["where"] = {"categoria": filtro_categoria}
+                respuesta = coleccion.query(**kwargs)
+            except Exception:  # noqa: BLE001 - coleccion vacia o error: se ignora
+                continue
+            distancias = (respuesta.get("distances") or [[]])[0]
+            if distancias:
+                puntuacion = max(0.0, min(1.0, 1.0 - float(distancias[0])))
+                mejor = max(mejor, puntuacion)
+        return mejor
+
+    # --------------------------------------------------------
     # Utilidades internas.
     # --------------------------------------------------------
 
@@ -315,12 +418,22 @@ class MotorVectorial:
         top_k: int,
         coleccion_origen: str,
         filtro_categoria: str | None = None,
+        where_extra: dict[str, Any] | None = None,
     ) -> list[FragmentoRecuperado]:
         """Ejecuta `coleccion.query` y mapea el resultado a FragmentoRecuperado."""
         # ChromaDB acepta `where={"campo": "valor"}` para filtrar por metadata.
-        kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": top_k}
+        # `where_extra` (ej. hash_archivo $in) se combina con la categoria
+        # mediante `$and`. El filtrado ocurre en el servidor.
+        clauses: list[dict[str, Any]] = []
         if filtro_categoria is not None:
-            kwargs["where"] = {"categoria": filtro_categoria}
+            clauses.append({"categoria": filtro_categoria})
+        if where_extra:
+            clauses.append(where_extra)
+        kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": top_k}
+        if len(clauses) == 1:
+            kwargs["where"] = clauses[0]
+        elif len(clauses) > 1:
+            kwargs["where"] = {"$and": clauses}
         try:
             respuesta = coleccion.query(**kwargs)
         except Exception as exc:  # noqa: BLE001 - chromadb lanza varias

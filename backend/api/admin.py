@@ -30,12 +30,19 @@ from backend.api.dependencias import (
     obtener_motor_vectorial,
     verificar_admin,
 )
-from backend.api.esquemas import CargarDocumentoOut, CrearUsuarioIn, CrearUsuarioOut
+from backend.api.esquemas import (
+    CargarDocumentoOut,
+    CrearUsuarioIn,
+    CrearUsuarioOut,
+    PermisoIn,
+    PermisoOut,
+)
 from backend.core.seguridad import hashear_contrasena
 from backend.db.conexion import obtener_sesion_bd
 from backend.db.modelos import (
     ROLES_VALIDOS,
     DocumentoIngestado,
+    Permiso,
     Usuario,
 )
 from backend.db.vectorial import (
@@ -50,6 +57,7 @@ from backend.servicios.gestion_pdf import (
     segmentar_texto,
 )
 from backend.servicios.telemetria import registrar_evento_admin
+from backend.servicios.permisos import RECURSOS_VALIDOS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -88,6 +96,7 @@ def crear_usuario(
             username=payload.username,
             password_hash=hashear_contrasena(payload.password),
             rol=payload.rol,
+            grupo=payload.grupo,
         )
         bd.add(nuevo)
         bd.commit()
@@ -330,3 +339,222 @@ async def cargar_documento(  # noqa: PLR0915 - flujo completo a proposito
         coleccion_destino=nombre_coleccion,
         hash_archivo=hash_calculado,
     )
+
+
+# ============================================================
+# Permisos documento/libro/caso <-> usuario o grupo (Fase 2).
+# Solo el admin puede verlos y cambiarlos.
+# ============================================================
+
+@router.get(
+    "/api/admin/permisos",
+    response_model=list[PermisoOut],
+)
+def listar_permisos(
+    admin: UsuarioActual = Depends(verificar_admin),
+) -> list[PermisoOut]:
+    """Lista las reglas de permiso de la firma del admin."""
+    bd: Session = obtener_sesion_bd()
+    try:
+        filas = (
+            bd.query(Permiso)
+            .filter(Permiso.tenant_id == admin["tenant_id"])
+            .order_by(Permiso.id)
+            .all()
+        )
+    finally:
+        bd.close()
+    return [
+        PermisoOut(
+            permiso_id=f.id,
+            tenant_id=f.tenant_id,
+            usuario_id=f.usuario_id,
+            grupo=f.grupo,
+            recurso_tipo=f.recurso_tipo,
+            recurso_id=f.recurso_id,
+            puede_ver=bool(f.puede_ver),
+        )
+        for f in filas
+    ]
+
+
+@router.post(
+    "/api/admin/permisos",
+    response_model=PermisoOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def crear_permiso(
+    payload: PermisoIn,
+    admin: UsuarioActual = Depends(verificar_admin),
+) -> PermisoOut:
+    """
+    Concede o deniega un recurso a un usuario o grupo.
+
+    Al menos uno de `usuario_id` / `grupo` es obligatorio. Si el
+    `usuario_id` apunta a un usuario de otra firma, 404.
+    """
+    if payload.usuario_id is None and not (payload.grupo or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Indica usuario_id o grupo (al menos uno).",
+        )
+    if payload.recurso_tipo not in RECURSOS_VALIDOS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"recurso_tipo invalido. Valores: {list(RECURSOS_VALIDOS)}",
+        )
+
+    bd: Session = obtener_sesion_bd()
+    try:
+        if payload.usuario_id is not None:
+            usuario = (
+                bd.query(Usuario)
+                .filter(
+                    Usuario.id == payload.usuario_id,
+                    Usuario.tenant_id == admin["tenant_id"],
+                )
+                .first()
+            )
+            if usuario is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Usuario no encontrado en tu firma.",
+                )
+        permiso = Permiso(
+            tenant_id=admin["tenant_id"],
+            usuario_id=payload.usuario_id,
+            grupo=(payload.grupo or "").strip() or None,
+            recurso_tipo=payload.recurso_tipo,
+            recurso_id=payload.recurso_id.strip(),
+            puede_ver=payload.puede_ver,
+            creado_por=admin["usuario_id"],
+        )
+        bd.add(permiso)
+        bd.commit()
+        bd.refresh(permiso)
+    except HTTPException:
+        bd.rollback()
+        raise
+    except IntegrityError as exc:
+        bd.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Regla de permiso duplicada.",
+        ) from exc
+    finally:
+        bd.close()
+
+    try:
+        registrar_evento_admin(
+            tenant_id=str(admin["tenant_id"]),
+            accion="crear_permiso" if permiso.puede_ver else "denegar_permiso",
+            detalle=(
+                f"usuario_id={permiso.usuario_id} grupo={permiso.grupo!r} "
+                f"{permiso.recurso_tipo}={permiso.recurso_id!r}"
+            ),
+            actor_usuario_id=admin["usuario_id"],
+        )
+    except Exception:  # noqa: BLE001 - la auditoria nunca rompe el 201
+        LOGGER.warning("No se pudo auditar crear_permiso %r", payload.recurso_id)
+
+    return PermisoOut(
+        permiso_id=permiso.id,
+        tenant_id=permiso.tenant_id,
+        usuario_id=permiso.usuario_id,
+        grupo=permiso.grupo,
+        recurso_tipo=permiso.recurso_tipo,
+        recurso_id=permiso.recurso_id,
+        puede_ver=bool(permiso.puede_ver),
+    )
+
+
+@router.delete(
+    "/api/admin/permisos/{permiso_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def borrar_permiso(
+    permiso_id: int,
+    admin: UsuarioActual = Depends(verificar_admin),
+) -> None:
+    """Borra una regla de permiso de la firma del admin."""
+    bd: Session = obtener_sesion_bd()
+    try:
+        permiso = (
+            bd.query(Permiso)
+            .filter(
+                Permiso.id == permiso_id,
+                Permiso.tenant_id == admin["tenant_id"],
+            )
+            .first()
+        )
+        if permiso is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Permiso no encontrado.",
+            )
+        detalle = (
+            f"usuario_id={permiso.usuario_id} grupo={permiso.grupo!r} "
+            f"{permiso.recurso_tipo}={permiso.recurso_id!r}"
+        )
+        bd.delete(permiso)
+        bd.commit()
+    finally:
+        bd.close()
+
+    try:
+        registrar_evento_admin(
+            tenant_id=str(admin["tenant_id"]),
+            accion="borrar_permiso",
+            detalle=detalle,
+            actor_usuario_id=admin["usuario_id"],
+        )
+    except Exception:  # noqa: BLE001 - la auditoria nunca rompe el 204
+        LOGGER.warning("No se pudo auditar borrar_permiso %s", permiso_id)
+
+
+@router.get("/api/admin/permisos/matriz")
+def matriz_permisos(
+    admin: UsuarioActual = Depends(verificar_admin),
+) -> dict:
+    """
+    Matriz usuario x recurso para el panel del admin: usuarios de la
+    firma con su grupo y todas las reglas de la firma.
+    """
+    bd: Session = obtener_sesion_bd()
+    try:
+        usuarios = (
+            bd.query(Usuario)
+            .filter(Usuario.tenant_id == admin["tenant_id"])
+            .order_by(Usuario.id)
+            .all()
+        )
+        permisos = (
+            bd.query(Permiso)
+            .filter(Permiso.tenant_id == admin["tenant_id"])
+            .order_by(Permiso.id)
+            .all()
+        )
+    finally:
+        bd.close()
+    return {
+        "usuarios": [
+            {
+                "usuario_id": u.id,
+                "username": u.username,
+                "rol": u.rol,
+                "grupo": u.grupo,
+            }
+            for u in usuarios
+        ],
+        "permisos": [
+            {
+                "permiso_id": p.id,
+                "usuario_id": p.usuario_id,
+                "grupo": p.grupo,
+                "recurso_tipo": p.recurso_tipo,
+                "recurso_id": p.recurso_id,
+                "puede_ver": bool(p.puede_ver),
+            }
+            for p in permisos
+        ],
+    }

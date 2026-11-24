@@ -41,8 +41,9 @@ class CrearUsuarioIn(BaseModel):
 
     username: str = Field(min_length=3, max_length=120)
     password: str = Field(min_length=8, max_length=128)
-    rol: str = Field(pattern="^(admin|abogado)$")
+    rol: str = Field(pattern="^(admin|abogado|cliente)$")
     tenant_id: int = Field(ge=1)
+    grupo: str | None = Field(default=None, max_length=120)
 
 
 class CrearUsuarioOut(BaseModel):
@@ -68,6 +69,32 @@ class CargarDocumentoOut(BaseModel):
 
 
 # ============================================================
+# Permisos (Fase 2: matriz usuario/grupo x documento).
+# ============================================================
+
+class PermisoIn(BaseModel):
+    """Body de POST /api/admin/permisos. Solo accesible para admins."""
+
+    usuario_id: int | None = Field(default=None, ge=1)
+    grupo: str | None = Field(default=None, max_length=120)
+    recurso_tipo: str = Field(pattern="^(coleccion|documento)$")
+    recurso_id: str = Field(min_length=1, max_length=255)
+    puede_ver: bool = True
+
+
+class PermisoOut(BaseModel):
+    """Una fila de la tabla permisos."""
+
+    permiso_id: int
+    tenant_id: int
+    usuario_id: int | None
+    grupo: str | None
+    recurso_tipo: str
+    recurso_id: str
+    puede_ver: bool
+
+
+# ============================================================
 # Chat.
 # ============================================================
 
@@ -78,6 +105,8 @@ class PreguntaIn(BaseModel):
 class RespuestaChatOut(BaseModel):
     pregunta_ofuscada: str
     respuesta: str
+    # Fase 2: True si se denego por falta de permiso (sin llamar al LLM).
+    acceso_denegado: bool = False
 
 
 class SubirExpedienteOut(BaseModel):

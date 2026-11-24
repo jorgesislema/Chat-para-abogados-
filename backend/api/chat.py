@@ -19,10 +19,15 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencias import (
     UsuarioActual,
+    obtener_motor_vectorial,
     obtener_orquestador_rag,
     obtener_usuario_actual,
 )
 from backend.api.esquemas import PreguntaIn, RespuestaChatOut
+from backend.db.conexion import obtener_sesion_bd
+from backend.db.modelos import Permiso, Usuario
+from backend.db.vectorial import MotorVectorial
+from backend.servicios.permisos import PermisoRegla, filas_a_reglas
 from backend.servicios.rag_motor import OrquestadorRAG
 from backend.servicios.telemetria import (
     formatear_fuentes_para_auditoria,
@@ -30,6 +35,46 @@ from backend.servicios.telemetria import (
 )
 
 router = APIRouter(tags=["chat"])
+
+
+def _contexto_permisos(
+    usuario_actual: UsuarioActual,
+    motor: MotorVectorial,
+) -> tuple[str, int | None, str | None, list[PermisoRegla], list[str]]:
+    """
+    Resuelve (rol, usuario_id, grupo, reglas, colecciones_existentes)
+    para el flujo permiso-aware del orquestador.
+
+    Lee el grupo del usuario y las reglas de su tenant desde SQLite.
+    Si la BD falla, devuelve alcance vacio (denegar por defecto).
+    """
+    rol = usuario_actual.get("rol", "abogado")
+    usuario_id = usuario_actual["usuario_id"]
+    grupo: str | None = None
+    reglas: list[PermisoRegla] = []
+    try:
+        bd = obtener_sesion_bd()
+        try:
+            usuario = (
+                bd.query(Usuario).filter(Usuario.id == usuario_id).first()
+            )
+            if usuario is not None:
+                grupo = usuario.grupo
+            filas = (
+                bd.query(Permiso)
+                .filter(Permiso.tenant_id == usuario_actual["tenant_id"])
+                .all()
+            )
+            reglas = filas_a_reglas(filas)
+        finally:
+            bd.close()
+    except Exception:  # noqa: BLE001 - sin BD no hay permisos: denegar por defecto
+        reglas = []
+    try:
+        existentes = [c.name for c in motor._cliente.list_collections()]
+    except Exception:  # noqa: BLE001 - fallback a la base minima
+        existentes = []
+    return rol, usuario_id, grupo, reglas, existentes
 
 
 # ============================================================
@@ -70,6 +115,8 @@ class RespuestaSimpleOut(BaseModel):
     tokens_completion: int = 0
     # Filtro de categoria aplicado (None = "Todas").
     categoria_filtrada: str | None = None
+    # Fase 2: True si se denego por falta de permiso (sin llamar al LLM).
+    acceso_denegado: bool = False
 
 
 # ============================================================
@@ -82,6 +129,7 @@ async def chat_frontend(
     background_tasks: BackgroundTasks,
     usuario_actual: UsuarioActual = Depends(obtener_usuario_actual),
     orquestador: OrquestadorRAG = Depends(obtener_orquestador_rag),
+    motor: MotorVectorial = Depends(obtener_motor_vectorial),
 ) -> RespuestaSimpleOut:
     """
     Ejecuta la cadena RAG completa para una pregunta del abogado
@@ -92,14 +140,24 @@ async def chat_frontend(
     auditoria. NOTA: para ChromaDB el orquestador recibe el
     `usuario_id` (claims `sub`, ID del abogado especifico), porque
     cada abogado tiene su coleccion privada `casos_user_<id>`.
+
+    Fase 2: la busqueda respeta la matriz de permisos (solo el admin
+    cambia permisos). Sin permiso, la respuesta lo indica sin filtrar
+    texto ajeno (`acceso_denegado=True`, sin llamada al LLM).
     """
     abogado_id = str(usuario_actual["usuario_id"])
     tenant_firma = str(usuario_actual["tenant_id"])
+    rol, uid, grupo, reglas, existentes = _contexto_permisos(usuario_actual, motor)
 
     resultado = await orquestador.consultar(
         pregunta_cruda=payload.pregunta,
         tenant_id=abogado_id,
         categoria=payload.categoria,
+        rol=rol,
+        usuario_id=uid,
+        grupo=grupo,
+        reglas_permiso=reglas,
+        colecciones_existentes=existentes,
     )
 
     background_tasks.add_task(
@@ -123,6 +181,7 @@ async def chat_frontend(
         tokens_prompt=resultado.get("tokens_prompt", 0),
         tokens_completion=resultado.get("tokens_completion", 0),
         categoria_filtrada=resultado.get("categoria_filtrada"),
+        acceso_denegado=resultado.get("acceso_denegado", False),
     )
 
 
@@ -152,6 +211,7 @@ async def preguntar(
     background_tasks: BackgroundTasks,
     usuario_actual: UsuarioActual = Depends(obtener_usuario_actual),
     orquestador: OrquestadorRAG = Depends(obtener_orquestador_rag),
+    motor: MotorVectorial = Depends(obtener_motor_vectorial),
 ) -> RespuestaChatOut:
     """
     Punto de entrada del chat juridico (cadena RAG completa + auditoria).
@@ -159,14 +219,20 @@ async def preguntar(
     Mismo orquestador que `/api/chat`: ofusca, busca contexto en el
     motor vectorial, llama al LLM async y registra la auditoria en
     background. Contrato compacto para clientes que ya tienen
-    frontend propio.
+    frontend propio. Respeta permisos (Fase 2).
     """
     abogado_id = str(usuario_actual["usuario_id"])
     tenant_firma = str(usuario_actual["tenant_id"])
+    rol, uid, grupo, reglas, existentes = _contexto_permisos(usuario_actual, motor)
 
     resultado = await orquestador.consultar(
         pregunta_cruda=payload.pregunta,
         tenant_id=abogado_id,
+        rol=rol,
+        usuario_id=uid,
+        grupo=grupo,
+        reglas_permiso=reglas,
+        colecciones_existentes=existentes,
     )
 
     background_tasks.add_task(
@@ -182,4 +248,5 @@ async def preguntar(
     return RespuestaChatOut(
         pregunta_ofuscada=resultado["pregunta_ofuscada"],
         respuesta=resultado["respuesta"],
+        acceso_denegado=resultado.get("acceso_denegado", False),
     )
