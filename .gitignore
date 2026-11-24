@@ -85,3 +85,6 @@ trazabilidad/
 
 # --- Inspeccion temporal de ChromaDB (higiene local) ---
 .tmp_chroma_inspect/
+
+
+docs_ia/
