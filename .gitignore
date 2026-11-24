@@ -93,3 +93,6 @@ trazabilidad/
 docs_ia/
 trazabilidad/
 
+
+# --- Logs de ejecucion (pueden tener metadatos de uso) ---
+logs/
