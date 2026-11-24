@@ -50,10 +50,37 @@ _URLS_POR_DEFECTO: dict[str, str] = {
 }
 
 
-def _resolver_llm_api_key() -> str:
-    """Prioridad: LLM_API_KEY > SENSENOVA_API_KEY > SEEK_API_KEY > HMS_API_KEY > OPENROUTER_API_KEY."""
+_CLAVE_POR_PROVEEDOR: dict[str, str] = {
+    PROVEEDOR_SENSENOVA: "SENSENOVA_API_KEY",
+    PROVEEDOR_SEEK: "SEEK_API_KEY",
+    PROVEEDOR_HMS: "HMS_API_KEY",
+    PROVEEDOR_OPENROUTER: "OPENROUTER_API_KEY",
+}
+
+
+def _resolver_proveedor() -> str:
+    """
+    LLM_PROVEEDOR manda (AI_PROVIDER se acepta como alias).
+    Si no hay ninguno, se deduce de la clave presente, para no mandar por
+    error una clave de SenseNova a OpenRouter (error 401).
+    """
+    valor = (os.getenv("LLM_PROVEEDOR") or os.getenv("AI_PROVIDER") or "").strip().lower()
+    if valor in _URLS_POR_DEFECTO:
+        return valor
+    if os.getenv("OPENROUTER_API_KEY"):
+        return PROVEEDOR_OPENROUTER
+    for proveedor in (PROVEEDOR_SENSENOVA, PROVEEDOR_SEEK, PROVEEDOR_HMS):
+        if os.getenv(_CLAVE_POR_PROVEEDOR[proveedor]):
+            return proveedor
+    return PROVEEDOR_OPENROUTER
+
+
+def _resolver_llm_api_key(proveedor: str = "") -> str:
+    """Prioridad: LLM_API_KEY > clave del proveedor elegido > cualquier otra."""
+    propia = os.getenv(_CLAVE_POR_PROVEEDOR.get(proveedor, ""), "") if proveedor else ""
     return (
         os.getenv("LLM_API_KEY", "")
+        or propia
         or os.getenv("SENSENOVA_API_KEY", "")
         or os.getenv("SEEK_API_KEY", "")
         or os.getenv("HMS_API_KEY", "")
@@ -70,12 +97,16 @@ def _resolver_llm_base_url(proveedor: str) -> str:
 
 
 def _resolver_llm_modelo(proveedor: str) -> str:
-    """LLM_MODELO manda; si no, modelo economico por proveedor."""
+    """LLM_MODELO manda; si no, modelo por proveedor.
+
+    Un nombre con "/" (ej. meta-llama/llama-3-8b-instruct) es de OpenRouter:
+    otro proveedor lo rechaza con 404, asi que se ignora y se usa el suyo.
+    """
     explicito = os.getenv("LLM_MODELO", "").strip()
-    if explicito:
+    if explicito and not (proveedor != PROVEEDOR_OPENROUTER and "/" in explicito):
         return explicito
     if proveedor == PROVEEDOR_SENSENOVA:
-        return "SenseNova-V6-Pro"
+        return "sensenova-6.8-flash"
     if proveedor == PROVEEDOR_SEEK:
         return "deepseek-chat"
     return "meta-llama/llama-3-8b-instruct"
@@ -140,16 +171,14 @@ def _flotante_env(nombre: str, defecto: float) -> float:
 @lru_cache(maxsize=1)
 def obtener_configuracion() -> Configuracion:
     """Devuelve la configuracion cargada una sola vez (cacheada)."""
-    proveedor = os.getenv("LLM_PROVEEDOR", PROVEEDOR_OPENROUTER).strip().lower()
-    if proveedor not in _URLS_POR_DEFECTO:
-        proveedor = PROVEEDOR_OPENROUTER
+    proveedor = _resolver_proveedor()
 
     return Configuracion(
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         llm_modelo=_resolver_llm_modelo(proveedor),
         llm_proveedor=proveedor,
         llm_base_url=_resolver_llm_base_url(proveedor),
-        llm_api_key=_resolver_llm_api_key(),
+        llm_api_key=_resolver_llm_api_key(proveedor),
         secret_key_jwt=_validar_secret_jwt(os.getenv("SECRET_KEY_JWT", "")),
         algoritmo_jwt=os.getenv("ALGORITMO_JWT", "HS256"),
         expiracion_token_minutos=_entero_env("EXPIRACION_TOKEN_MINUTOS", 30),
