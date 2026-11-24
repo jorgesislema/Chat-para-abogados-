@@ -5,7 +5,7 @@
 
 ## Estado Fases 0-2, F, G2 (2026-11-24, rama `mejora/portafolio`)
 
-- **Suite pytest en verde: 212 passed, 0 failed** (2026-11-24).
+- **Suite pytest en verde: 216 passed, 0 failed** (2026-11-24, FastAPI 0.115).
   Las cifras 59/77/94/97 de abajo son historicas, previas a las fases.
 - Routers unificados (`auth/admin/chat`); `SECRET_KEY_JWT` fail-fast;
   rate limit login; auditoria `[ADMIN]`; PII Ecuador; roles

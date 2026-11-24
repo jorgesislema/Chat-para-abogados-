@@ -311,7 +311,7 @@ def editar_conversacion(
     return _a_out(conv, int(total))
 
 
-@router.delete("/api/conversaciones/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/api/conversaciones/{conv_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)  # 204 sin cuerpo (FastAPI 0.115 y 0.136)
 def borrar_conversacion(
     conv_id: int,
     usuario_actual: UsuarioActual = Depends(obtener_usuario_actual),

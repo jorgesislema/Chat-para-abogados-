@@ -496,6 +496,7 @@ def crear_permiso(
 @router.delete(
     "/api/admin/permisos/{permiso_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,  # 204 sin cuerpo (compatible FastAPI 0.115 y 0.136)
 )
 def borrar_permiso(
     permiso_id: int,
@@ -633,7 +634,8 @@ def listar_documentos(
 
 
 @router.delete(
-    "/api/admin/documentos/{doc_id}", status_code=status.HTTP_204_NO_CONTENT
+    "/api/admin/documentos/{doc_id}", status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,  # 204 sin cuerpo (compatible FastAPI 0.115 y 0.136)
 )
 def borrar_documento(
     doc_id: int,

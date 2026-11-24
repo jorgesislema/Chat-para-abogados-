@@ -1,3 +1,5 @@
+# LegalRAG en local: UNA pagina profesional en http://localhost:8000
+# (API + interfaz web servidas por FastAPI). Un solo servicio, un solo URL.
 services:
   backend:
     build:
@@ -7,13 +9,18 @@ services:
     container_name: legalrag-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Puerto host configurable (otra app puede ocupar el 8000):
+      #   PUERTO_HOST=8081 docker compose up -d
+      - "${PUERTO_HOST:-8000}:8000"
     env_file:
       - .env
     environment:
       CADENA_BD: "sqlite:////app/backend/db/legalrag.db"
       RUTA_CHROMADB: "/app/backend/db/chroma_data"
       PYTHONPATH: "/app"
+      # Siembra la demo (bufete, usuarios, casos, conversaciones) en el
+      # primer arranque. Idempotente: si ya existe, no hace nada.
+      AUTO_SEMBRAR_DEMO: "1"
     volumes:
       - ./backend/db:/app/backend/db
     healthcheck:
@@ -21,26 +28,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
-    networks:
-      - legalrag-net
-
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    image: legalrag-frontend:latest
-    container_name: legalrag-frontend
-    restart: unless-stopped
-    ports:
-      - "8501:8501"
-    environment:
-      URL_API_BACKEND: "http://backend:8000"
-      STREAMLIT_SERVER_HEADLESS: "true"
-      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
-    depends_on:
-      backend:
-        condition: service_healthy
+      start_period: 60s
     networks:
       - legalrag-net
 
