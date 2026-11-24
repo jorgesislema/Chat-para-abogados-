@@ -95,7 +95,14 @@ class Expediente(Base):
 
 
 class Mensaje(Base):
-    """Registro de cada pregunta/respuesta del chat juridico."""
+    """
+    Registro LEGACY de cada pregunta/respuesta (sin conversacion asociada).
+
+    DEPRECADO en Fase F: el historial vive en `conversaciones` +
+    `mensajes_chat`. Se conserva el modelo para no romper BDs existentes
+    (ningun endpoint lo escribe; la auditoria usa `RegistroAuditoria`).
+    No crear filas nuevas.
+    """
 
     __tablename__ = "mensajes"
 
@@ -232,10 +239,86 @@ class Permiso(Base):
     )
 
 
+class Caso(Base):
+    """
+    Caso/juicio del bufete con datos estructurados (Fase D).
+
+    Los filtros exactos (materia, estado, numero de proceso) se hacen
+    sobre estas columnas; la busqueda semantica va sobre ChromaDB.
+    Todos los datos son ficticios en demo.
+    """
+
+    __tablename__ = "casos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    numero_proceso: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    materia: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    juzgado: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    estado: Mapped[str] = mapped_column(String(60), nullable=False, default="abierto")
+    cliente_nombre: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    abogado_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuarios.id"), nullable=True, default=None
+    )
+    fecha_ingreso: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    fecha_audiencia: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    # Username del cliente dueno del caso (para visibilidad del rol cliente).
+    cliente_username: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+
+
+class Conversacion(Base):
+    """Hilo de chat de un usuario (Fase E/F)."""
+
+    __tablename__ = "conversaciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    usuario_id: Mapped[int] = mapped_column(
+        ForeignKey("usuarios.id"), nullable=False, index=True
+    )
+    titulo: Mapped[str] = mapped_column(String(200), nullable=False, default="Sin titulo")
+    materia: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    caso_id: Mapped[int | None] = mapped_column(
+        ForeignKey("casos.id"), nullable=True, default=None
+    )
+    etiquetas: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    archivada: Mapped[bool] = mapped_column(nullable=False, default=False)
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+    actualizada_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class MensajeChat(Base):
+    """Un mensaje dentro de una conversacion (rol user|assistant)."""
+
+    __tablename__ = "mensajes_chat"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversacion_id: Mapped[int] = mapped_column(
+        ForeignKey("conversaciones.id"), nullable=False, index=True
+    )
+    rol: Mapped[str] = mapped_column(String(20), nullable=False)
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    fuentes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
 __all__ = [
+    "Caso",
+    "Conversacion",
     "DocumentoIngestado",
     "Expediente",
     "Mensaje",
+    "MensajeChat",
     "Permiso",
     "RegistroAuditoria",
     "ROL_ABOGADO",

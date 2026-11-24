@@ -9,11 +9,13 @@ de la base de datos relacional.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from backend.api import admin, auth, chat
+from backend.api import admin, auth, chat, conversaciones
 from backend.db.base import Base
 from backend.db.conexion import engine
 
@@ -49,6 +51,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(chat.router)
+app.include_router(conversaciones.router)
 
 
 # Alias en español para compatibilidad con tests y docs (`aplicacion`).
@@ -60,3 +63,14 @@ aplicacion = app
 def salud() -> dict[str, str]:
     """Endpoint de healthcheck basico para monitoreo."""
     return {"estado": "ok", "servicio": "LegalRAG_SaaS"}
+
+
+# Interfaz web propia (Fase F): servida por FastAPI en `/`.
+# El directorio no existe en instalaciones solo-API: se monta si esta.
+_DIR_FRONTEND = Path(__file__).resolve().parents[1] / "frontend_moderno"
+if _DIR_FRONTEND.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(_DIR_FRONTEND), html=True),
+        name="frontend",
+    )

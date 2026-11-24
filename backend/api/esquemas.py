@@ -110,6 +110,80 @@ class RespuestaChatOut(BaseModel):
 
 
 class SubirExpedienteOut(BaseModel):
+    """LEGACY: respuesta del eliminado POST /admin/expedientes. Sin uso."""
+
     expediente_id: int
     titulo: str
     chunks_indexados: int
+
+
+# ============================================================
+# Conversaciones y casos (Fase D/E/F).
+# ============================================================
+
+class ConversacionOut(BaseModel):
+    """Una conversacion del historial."""
+
+    id: int
+    titulo: str
+    materia: str | None = None
+    caso_id: int | None = None
+    etiquetas: str = ""
+    archivada: bool = False
+    creada_en: str = ""
+    actualizada_en: str = ""
+    mensajes: int = 0
+
+
+class ConversacionCrearIn(BaseModel):
+    titulo: str | None = Field(default=None, max_length=200)
+    materia: str | None = Field(default=None, max_length=80)
+    caso_id: int | None = None
+    etiquetas: str | None = Field(default="", max_length=500)
+
+
+class ConversacionEditarIn(BaseModel):
+    titulo: str | None = Field(default=None, max_length=200)
+    materia: str | None = Field(default=None, max_length=80)
+    caso_id: int | None = None
+    etiquetas: str | None = Field(default=None, max_length=500)
+    archivada: bool | None = None
+
+
+class MensajeChatIn(BaseModel):
+    rol: str = Field(pattern="^(user|assistant)$")
+    contenido: str = Field(min_length=1, max_length=20000)
+    fuentes: str | None = Field(default="", max_length=5000)
+
+
+class MensajeChatOut(BaseModel):
+    id: int
+    rol: str
+    contenido: str
+    fuentes: str = ""
+    creada_en: str = ""
+
+
+class CasoOut(BaseModel):
+    id: int
+    numero_proceso: str
+    materia: str
+    juzgado: str = ""
+    estado: str = ""
+    cliente_nombre: str = ""
+    cliente_username: str = ""
+    abogado_id: int | None = None
+    fecha_ingreso: str = ""
+    fecha_audiencia: str = ""
+
+
+class CasoCrearIn(BaseModel):
+    numero_proceso: str = Field(min_length=3, max_length=80)
+    materia: str = Field(min_length=2, max_length=80)
+    juzgado: str | None = Field(default="", max_length=200)
+    estado: str | None = Field(default="abierto", max_length=60)
+    cliente_nombre: str | None = Field(default="", max_length=200)
+    cliente_username: str | None = Field(default="", max_length=120)
+    abogado_id: int | None = None
+    fecha_ingreso: str | None = Field(default="", max_length=20)
+    fecha_audiencia: str | None = Field(default="", max_length=20)
