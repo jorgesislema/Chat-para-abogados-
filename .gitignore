@@ -96,3 +96,6 @@ trazabilidad/
 
 # --- Logs de ejecucion (pueden tener metadatos de uso) ---
 logs/
+
+# --- Respaldos locales de datos ---
+respaldos/
