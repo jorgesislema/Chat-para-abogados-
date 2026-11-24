@@ -110,7 +110,13 @@ button { font-family: inherit; cursor: pointer; }
   border: 1px solid var(--borde); }
 .msg .avatar { font-weight: 800; font-size: 12px; color: var(--dorado-osc); display: block; margin-bottom: 2px; }
 [data-tema="oscuro"] .msg .avatar { color: var(--dorado); }
-.msg.denegdado { border-left: 4px solid var(--peligro); }
+.msg.denegado { border-left: 4px solid var(--peligro); }
+.msg-texto { display: block; word-wrap: break-word; }
+.msg-texto p { margin: 0 0 8px; }
+.msg-texto p:last-child { margin-bottom: 0; }
+.msg-texto ul { margin: 4px 0 8px 18px; padding: 0; }
+.msg-texto strong { color: inherit; font-weight: 700; }
+.chat-cabecera { gap: 12px; }
 .msg-acciones { margin-top: 6px; display: flex; gap: 6px; }
 .msg-acciones button { font-size: 12px; background: none; border: 1px solid var(--borde);
   border-radius: 6px; padding: 3px 8px; color: var(--texto-2); }
