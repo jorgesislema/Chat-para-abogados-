@@ -104,73 +104,43 @@ docker-compose exec backend bash   # Abrir shell dentro del backend
 `-- requerimientos.txt       # Dependencias del backend
 ```
 
-## Como ejecutar el proyecto (Modo Produccion Local)
+## Guia de Inicio Rapido (On-Premise)
 
-### Linux / macOS (recomendado)
+Para entregar LegalRAG en el bufete del cliente:
 
-Un solo comando levanta backend + frontend con limpieza automatica
-de procesos al salir (Ctrl+C).
+### 1. Instalar Docker Desktop
+
+Descargue e instale Docker Desktop desde https://www.docker.com/products/docker-desktop/
+
+### 2. Configurar el archivo de entorno
+
+Renombre `.env.ejemplo` a `.env` y coloque su llave de API de OpenRouter:
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
+SECRET_KEY_JWT=<64+ caracteres aleatorios>
+```
+
+### 3. Iniciar el sistema con un solo clic
+
+- **Windows**: haga doble clic en `iniciar_legalrag.bat`
+- **macOS / Linux**: abra una terminal en la carpeta del proyecto y ejecute:
 
 ```bash
-# 1) Dar permisos de ejecucion al script (solo la primera vez)
-chmod +x iniciar_saas.sh
-
-# 2) Arrancar todo
-./iniciar_saas.sh
+chmod +x iniciar_legalrag.sh
+./iniciar_legalrag.sh
 ```
 
-El script:
+El script construira las imagenes Docker, levantara los servicios y
+abrira automaticamente el navegador en la plataforma.
 
-- Activa `.venv` si existe.
-- Levanta el backend en `http://localhost:8000`.
-- Espera 3 segundos a que ChromaDB y SQLite se inicialicen.
-- Levanta el frontend en `http://localhost:8501`.
-- Captura Ctrl+C y mata AMBOS procesos (backend + frontend)
-  limpiamente.
+### 4. Detener el sistema
 
-Para detener el sistema: `Ctrl+C` en la terminal donde corre el script.
-
-### Windows (PowerShell)
-
-El script `.sh` no se ejecuta directamente en Windows. Tienes dos
-opciones equivalentes:
-
-**Opcion A: dos terminales separadas** (la mas simple).
-
-```powershell
-# Terminal 1: backend
-.\.venv\Scripts\Activate.ps1
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
-
-# Terminal 2: frontend
-.\.venv\Scripts\Activate.ps1
-streamlit run frontend/app.py --server.port 8501
+```bash
+docker-compose down
 ```
 
-**Opcion B: archivo `.bat` equivalente** (un solo doble-clic).
-
-Crea `iniciar_saas.bat` en la raiz:
-
-```bat
-@echo off
-echo Iniciando LegalRAG SaaS B2B...
-
-REM Activar entorno virtual
-call .venv\Scripts\activate.bat
-
-REM Lanzar backend en segundo plano
-start "Backend FastAPI" cmd /k "uvicorn backend.main:app --host 0.0.0.0 --port 8000"
-
-REM Esperar inicializacion de ChromaDB y SQLite
-timeout /t 3 /nobreak > NUL
-
-REM Lanzar frontend
-streamlit run frontend/app.py --server.port 8501
-```
-
-Nota: el frontend hereda la ventana actual (al cerrarla se cierra
-Streamlit, pero el backend queda en su propia ventana). Para matar
-ambos: cerrar las dos ventanas.
+Los datos de expedientes persisten en `backend/db/` y no se pierden al detener los contenedores.
 
 ## Verificacion de la instalacion
 
