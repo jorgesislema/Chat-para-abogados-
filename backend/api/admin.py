@@ -278,9 +278,10 @@ async def cargar_documento(  # noqa: PLR0915 - flujo completo a proposito
             detail="El PDF no produjo texto segmentable",
         )
 
-    # Fase G2: si el texto trae encabezados de articulos, se indexa por
-    # articulo (unidad completa + partes numeradas); si no, chunking legacy.
-    unidades_articulo = segmentar_por_articulos(texto, ley=titulo)
+    # Fase G2: las LEYES se indexan por articulo (unidad completa + partes
+    # numeradas). Sentencias y expedientes no: el corte por articulo tiraria
+    # todo lo anterior al primer "Art." (antecedentes, tema, considerandos).
+    unidades_articulo = segmentar_por_articulos(texto, ley=titulo) if categoria == "Leyes" else []
     usar_articulos = len(unidades_articulo) > 0
 
     metadata = {
