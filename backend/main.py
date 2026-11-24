@@ -1,4 +1,4 @@
-"""
+﻿"""
 Punto de entrada de la aplicacion FastAPI.
 
 Crea la instancia de la app, monta los routers, configura CORS para el
@@ -15,7 +15,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api import admin, auth, chat, conversaciones
+from backend.api import admin, auth, chat, conversaciones, logs
+from backend.core.registro_logs import MiddlewareRegistro, configurar_logs
 from backend.db.base import Base
 from backend.db.conexion import engine
 
@@ -37,6 +38,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+configurar_logs()
+app.add_middleware(MiddlewareRegistro)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -52,6 +55,7 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(chat.router)
 app.include_router(conversaciones.router)
+app.include_router(logs.router)
 
 
 # Alias en español para compatibilidad con tests y docs (`aplicacion`).
