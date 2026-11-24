@@ -372,6 +372,11 @@ def _sembrar_vectores() -> None:
     from backend.db.vectorial import COLECCION_GLOBAL, MotorVectorial
 
     motor = MotorVectorial()
+    # Si la biblioteca ya tiene documentos (reales o demo) no se agregan leyes
+    # falsas: contradecirian a las reales (ej. un "Art. 188" inventado).
+    if motor.obtener_o_crear_coleccion(COLECCION_GLOBAL).count() > 0:
+        print("Vectores demo: la biblioteca ya tiene documentos, no se agrega nada.")
+        return
     for titulo, categoria, texto in TEXTOS_DEMO:
         motor.ingestar_chunks(
             [texto], COLECCION_GLOBAL,
