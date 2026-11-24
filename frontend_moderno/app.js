@@ -114,6 +114,7 @@ async function cargarPerfil() {
   $("usuario-nombre").textContent = estado.perfil.username || "Usuario";
   $("usuario-rol").textContent = "Rol: " + estado.perfil.rol;
   $("btn-admin").hidden = estado.perfil.rol !== "admin";
+  $("nav-admin").hidden = estado.perfil.rol !== "admin";
   mostrarApp();
 }
 function salir() {
@@ -126,6 +127,7 @@ function mostrarApp() {
   $("vista-login").hidden = true; $("vista-app").hidden = false;
   aplicarModoBurbuja();
   cargarMaterias(); listarConversaciones(true); nuevaConversacion();
+  mostrarVista("biblioteca"); cargarBiblioteca();
   if (new URLSearchParams(location.search).get("vista") === "admin" && estado.perfil.rol === "admin") abrirAdmin();
 }
 $("form-login").addEventListener("submit", async (e) => {
@@ -197,7 +199,7 @@ $("btn-archivadas").addEventListener("click", (e) => {
   listarConversaciones(true);
 });
 $("btn-mas").addEventListener("click", () => { estado.page++; listarConversaciones(false); });
-$("btn-nueva").addEventListener("click", () => nuevaConversacion());
+$("btn-nueva").addEventListener("click", () => { nuevaConversacion(); mostrarVista("chat"); });
 $("btn-menu").addEventListener("click", () => { $("barra").classList.add("abierta"); $("fondo-barra").hidden = false; });
 $("fondo-barra").addEventListener("click", cerrarBarra);
 function cerrarBarra() { $("barra").classList.remove("abierta"); $("fondo-barra").hidden = true; }
@@ -230,7 +232,7 @@ async function abrirConversacion(id) {
   estado.caso = datos.caso; estado.fuentes = [];
   $("chat-titulo").textContent = datos.titulo;
   pintarHistorial(); pintarSugerencias(); pintarFuentes(); pintarCaso();
-  pintarConversaciones(); cerrarBarra();
+  pintarConversaciones(); cerrarBarra(); mostrarVista("chat");
 }
 function burbujaMsg(rol, contenido, hora, denegado = false, fuentes = []) {
   const d = document.createElement("div");
@@ -449,21 +451,15 @@ function pintarContador() {
 /* ---------- admin ---------- */
 $("btn-admin").addEventListener("click", abrirAdmin);
 function abrirAdmin() {
-  $("panel-chat").hidden = true; $("panel-admin").hidden = false;
-  if (window.innerWidth <= 1100) document.querySelector(".panel-der").style.display = "none";
+  mostrarVista("admin");
   cargarAdminTab("usuarios");
 }
-$("btn-volver-chat").addEventListener("click", () => {
-  $("panel-chat").hidden = false; $("panel-admin").hidden = true;
-  document.querySelector(".panel-der").style.display = "";
-});
+$("btn-volver-chat").addEventListener("click", () => mostrarVista("biblioteca"));
 document.querySelectorAll("#panel-admin .tab").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("#panel-admin .tab").forEach((x) => x.classList.remove("activo"));
   b.classList.add("activo"); cargarAdminTab(b.dataset.tab);
 }));
-$("chat-titulo").addEventListener("dblclick", () => {
-  $("panel-chat").hidden = false; $("panel-admin").hidden = true;
-});
+$("chat-titulo").addEventListener("dblclick", () => mostrarVista("chat"));
 async function cargarAdminTab(tab) {
   for (const t of ["usuarios", "permisos", "docs", "casos", "auditoria", "metricas", "logs"])
     $("tab-" + t).hidden = t !== tab;
@@ -556,22 +552,68 @@ async function tabDocs() {
   <select id="doc-cat" aria-label="Categoría"><option>Leyes</option><option>Jurisprudencia</option><option>Expediente</option></select>
   <input id="doc-dest" placeholder='Destino: global o ID de abogado' aria-label="Destino">
   <input id="doc-file" type="file" accept="application/pdf" aria-label="Archivo PDF">
-  <button class="btn-primario btn-chico" id="doc-subir">Subir</button></div><div id="doc-msg"></div>
+  <button class="btn-primario btn-chico" id="doc-subir">Subir</button></div>
+  <div id="doc-progreso" class="progreso" hidden>
+    <div class="progreso-ext" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Progreso de subida"><div id="doc-barra" class="progreso-int"></div></div>
+    <span id="doc-paso" class="progreso-texto"></span>
+  </div><div id="doc-msg"></div>
   <h3>Ingestados (${datos.items.length})</h3><table><tr><th>Archivo</th><th>Categoría</th><th>Destino</th><th></th></tr>`;
   for (const d of datos.items) h += `<tr><td></td><td>${esc(d.categoria)}</td><td>${esc(d.destino)}</td><td><button class="btn-secundario btn-chico peligro" data-borrar="${d.id}">Borrar</button></td></tr>`;
   h += "</table>";
   p.innerHTML = h;
   datos.items.forEach((d, i) => (p.querySelectorAll("td")[i * 4].textContent = d.nombre));
-  $("doc-subir").addEventListener("click", async () => {
+  $("doc-subir").addEventListener("click", () => {
     const f = $("doc-file").files[0];
     if (!f) { $("doc-msg").textContent = "Adjunte un PDF."; return; }
     const fd = new FormData();
     fd.append("file", f); fd.append("categoria", $("doc-cat").value);
     fd.append("destino_tenant_id", $("doc-dest").value.trim() || "global");
     fd.append("titulo", $("doc-titulo").value.trim() || f.name);
-    const r = await fetch(API + "/api/admin/documentos", { method: "POST", headers: { Authorization: "Bearer " + estado.token }, body: fd });
-    $("doc-msg").textContent = r.ok ? "Documento indexado." : "Error: " + (await r.text()).slice(0, 200);
-    if (r.ok) tabDocs();
+
+    const caja = $("doc-progreso"), barra = $("doc-barra"), paso = $("doc-paso"), boton = $("doc-subir");
+    const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+    const poner = (pct, texto) => {
+      barra.style.width = pct + "%"; caja.querySelector("[role=progressbar]").setAttribute("aria-valuenow", String(Math.round(pct)));
+      paso.textContent = texto;
+    };
+    caja.hidden = false; caja.classList.remove("procesando", "listo", "fallo");
+    boton.disabled = true; $("doc-msg").textContent = "";
+    poner(0, `Subiendo 0% (0 de ${mb(f.size)})`);
+    const inicio = Date.now(); let reloj = null;
+
+    const x = new XMLHttpRequest();
+    x.open("POST", API + "/api/admin/documentos");
+    x.setRequestHeader("Authorization", "Bearer " + estado.token);
+    x.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = (e.loaded / e.total) * 100;
+      poner(pct, `Subiendo ${Math.round(pct)}% (${mb(e.loaded)} de ${mb(e.total)})`);
+    };
+    // El archivo ya llegó: el servidor lee el texto y lo indexa (puede tardar).
+    x.upload.onload = () => {
+      caja.classList.add("procesando"); poner(100, "Archivo recibido. Leyendo y guardando el texto…");
+      reloj = setInterval(() => { paso.textContent = `Leyendo y guardando el texto… ${Math.round((Date.now() - inicio) / 1000)} s`; }, 1000);
+    };
+    const terminar = (ok, texto) => {
+      clearInterval(reloj); boton.disabled = false;
+      caja.classList.remove("procesando"); caja.classList.add(ok ? "listo" : "fallo");
+      poner(100, texto);
+    };
+    x.onload = () => {
+      let det = ""; try { det = JSON.parse(x.responseText).detail || ""; } catch { det = x.responseText.slice(0, 200); }
+      if (x.status >= 200 && x.status < 300) {
+        let n = ""; try { n = JSON.parse(x.responseText).chunks_indexados; } catch { /* sin dato */ }
+        terminar(true, `Listo. Documento indexado${n ? ` (${n} partes)` : ""}. Ya aparece en la Biblioteca.`);
+        setTimeout(() => tabDocs(), 1800);
+      } else {
+        if (x.status === 401) { salir(); return; }
+        const id = x.getResponseHeader("X-Id-Llamada") || "";
+        if (x.status >= 500) reportarError({ mensaje: det || "Fallo al subir", origen: "subida", ruta_api: "/api/admin/documentos", estado: x.status, id_llamada: id });
+        terminar(false, "No se pudo subir: " + (typeof det === "string" ? det : JSON.stringify(det)) + (id && x.status >= 500 ? ` (ref. ${id})` : ""));
+      }
+    };
+    x.onerror = () => { terminar(false, "Se cortó la conexión con el servidor. Intente de nuevo."); };
+    x.send(fd);
   });
   p.querySelectorAll("[data-borrar]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("¿Borrar documento y sus vectores?")) return;
@@ -657,5 +699,205 @@ async function tabLogs() {
   await cargar();
 }
 
-/* ---------- init ---------- */
+/* ---------- vistas y biblioteca ---------- */
+function mostrarVista(v) {
+  $("vista-app").dataset.vista = v;
+  $("panel-biblioteca").hidden = v !== "biblioteca";
+  $("panel-chat").hidden = v !== "chat";
+  $("panel-admin").hidden = v !== "admin";
+  $("nav-biblioteca").classList.toggle("activo", v === "biblioteca");
+  $("nav-asistente").classList.toggle("activo", v === "chat");
+  $("nav-admin").classList.toggle("activo", v === "admin");
+  cerrarBarra();
+}
+$("nav-biblioteca").addEventListener("click", () => { mostrarVista("biblioteca"); cargarBiblioteca(); });
+$("nav-asistente").addEventListener("click", () => mostrarVista("chat"));
+$("nav-admin").addEventListener("click", () => abrirAdmin());
+
+const bib = { cat: "", doc: null, coincidencias: [], actual: -1, q: "", tribunal: "", anio: "", materia: "" };
+let bibTemporizador = null;
+document.querySelectorAll(".bib-chips .chip").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".bib-chips .chip").forEach((x) => x.setAttribute("aria-pressed", "false"));
+  b.setAttribute("aria-pressed", "true"); bib.cat = b.dataset.cat;
+  bib.tribunal = bib.anio = bib.materia = "";
+  cargarBiblioteca();
+}));
+["tribunal", "anio", "materia"].forEach((k) => $("bib-" + k).addEventListener("change", (e) => { bib[k] = e.target.value; cargarBiblioteca(); }));
+$("bib-limpiar").addEventListener("click", () => { bib.tribunal = bib.anio = bib.materia = ""; $("bib-q").value = ""; cargarBiblioteca(); });
+function llenarSelect(id, valores, etiqueta, actual) {
+  const s = $(id); s.innerHTML = ""; const o0 = document.createElement("option"); o0.value = ""; o0.textContent = etiqueta; s.appendChild(o0);
+  for (const v of valores) { const o = document.createElement("option"); o.value = v; o.textContent = String(v)[0].toUpperCase() + String(v).slice(1); s.appendChild(o); }
+  s.value = actual;
+}
+$("bib-q").addEventListener("input", () => { clearTimeout(bibTemporizador); bibTemporizador = setTimeout(cargarBiblioteca, 250); });
+$("bib-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); buscarEnTextos(); } });
+
+async function cargarBiblioteca() {
+  const cont = $("bib-resultados");
+  try {
+    const params = new URLSearchParams();
+    if (bib.cat) params.set("categoria", bib.cat);
+    if ($("bib-q").value.trim()) params.set("q", $("bib-q").value.trim());
+    if (bib.tribunal) params.set("tribunal", bib.tribunal);
+    if (bib.anio) params.set("anio", bib.anio);
+    if (bib.materia) params.set("materia", bib.materia);
+    const d = await api("/api/biblioteca?" + params.toString());
+    const conFiltros = bib.cat === "Jurisprudencia" || bib.cat === "Expediente";
+    $("bib-filtros").hidden = !conFiltros;
+    if (conFiltros) {
+      llenarSelect("bib-tribunal", d.facetas.tribunales, "Todos los tribunales", bib.tribunal);
+      llenarSelect("bib-anio", d.facetas.anios, "Todos los años", bib.anio);
+      llenarSelect("bib-materia", d.facetas.materias, "Todas las materias", bib.materia);
+    }
+    if (!d.items.length) { cont.innerHTML = '<div class="vacio"><p>No hay documentos con ese filtro.<br>Pulse Enter para buscar la frase dentro de los textos.</p></div>'; return; }
+    cont.innerHTML = "";
+    for (const it of d.items) {
+      const b = document.createElement("button"); b.className = "doc-tarjeta";
+      b.innerHTML = '<span class="doc-icono" aria-hidden="true">§</span><span class="doc-info"><span class="doc-titulo"></span><span class="doc-meta"></span></span>';
+      b.querySelector(".doc-titulo").textContent = it.titulo;
+      const extra = [it.tribunal, it.anio, it.materia && it.materia[0].toUpperCase() + it.materia.slice(1)].filter(Boolean).join(" · ");
+      b.querySelector(".doc-meta").textContent = extra ? `${it.categoria} · ${extra}` : `${it.categoria} · ${it.ambito}`;
+      b.addEventListener("click", () => abrirDocumento(it.hash));
+      cont.appendChild(b);
+    }
+  } catch (err) { toast(err.message); }
+}
+async function buscarEnTextos() {
+  const q = $("bib-q").value.trim(); const cont = $("bib-resultados");
+  if (q.length < 2) return;
+  cont.innerHTML = '<div class="vacio"><p>Buscando en todos los documentos…</p></div>';
+  try {
+    const d = await api("/api/biblioteca/buscar?q=" + encodeURIComponent(q));
+    if (!d.items.length) { cont.innerHTML = '<div class="vacio"><p>No se encontró esa frase en ningún documento.</p></div>'; return; }
+    cont.innerHTML = "";
+    for (const it of d.items) {
+      const bloque = document.createElement("div"); bloque.className = "res-doc";
+      const t = document.createElement("h3"); t.textContent = `${it.titulo} (${it.categoria})`; bloque.appendChild(t);
+      for (const c of it.coincidencias) {
+        const b = document.createElement("button"); b.className = "res-frag"; b.textContent = "…" + c.fragmento + "…";
+        b.addEventListener("click", () => abrirDocumento(it.hash, { pos: c.pos, q }));
+        bloque.appendChild(b);
+      }
+      cont.appendChild(bloque);
+    }
+  } catch (err) { toast(err.message); }
+}
+
+async function abrirDocumento(hash, salto) {
+  try {
+    const d = await api("/api/biblioteca/" + hash);
+    bib.doc = d; bib.coincidencias = []; bib.actual = -1;
+    $("bib-lista-vista").hidden = true; $("bib-visor-vista").hidden = false;
+    $("bib-titulo").textContent = d.titulo;
+    $("bib-renombrar").hidden = estado.perfil?.rol !== "admin";
+    $("bib-ficha").hidden = estado.perfil?.rol !== "admin";
+    const f = d.ficha || {};
+    const linea = [f.tribunal, f.anio, f.materia && ("Materia " + f.materia), f.numero_proceso && ("Caso " + f.numero_proceso)].filter(Boolean).join(" · ");
+    $("bib-ficha-linea").hidden = !linea; $("bib-ficha-linea").textContent = linea;
+    $("visor-texto").textContent = d.texto;
+    $("visor-scroll").scrollTop = 0;
+    $("visor-q").value = salto?.q || ""; $("visor-cont").textContent = "";
+    const ind = $("visor-indice"); ind.innerHTML = "";
+    for (const a of d.articulos) {
+      const b = document.createElement("button"); b.textContent = a.etiqueta; b.dataset.pos = a.pos;
+      b.addEventListener("click", () => { irA(a.pos, a.etiqueta.length, true); });
+      ind.appendChild(b);
+    }
+    if (!d.articulos.length) ind.innerHTML = '<p class="visor-sin-indice">Sin artículos detectados.</p>';
+    if (salto?.q) { buscarEnVisor(salto.q, salto.pos); }
+  } catch (err) { toast(err.message); }
+}
+$("bib-volver").addEventListener("click", () => {
+  $("bib-visor-vista").hidden = true; $("bib-lista-vista").hidden = false; limpiarResaltado();
+});
+$("bib-ficha").addEventListener("click", async () => {
+  if (!bib.doc) return; const f = bib.doc.ficha || {};
+  const tribunal = prompt("Tribunal:", f.tribunal || ""); if (tribunal === null) return;
+  const anio = prompt("Año:", f.anio || ""); if (anio === null) return;
+  const materia = prompt("Materia (laboral, penal, civil…):", f.materia || ""); if (materia === null) return;
+  const numero = prompt("Número de caso:", f.numero_proceso || ""); if (numero === null) return;
+  try {
+    const r = await api(`/api/admin/biblioteca/${bib.doc.hash}/ficha`, { method: "PATCH", body: JSON.stringify({ tribunal, anio: anio ? +anio : null, materia, numero_proceso: numero }) });
+    bib.doc.ficha = { ...f, ...r }; toast("Ficha actualizada"); abrirDocumento(bib.doc.hash);
+  } catch (err) { toast(err.message); }
+});
+$("bib-renombrar").addEventListener("click", async () => {
+  if (!bib.doc) return;
+  const t = prompt("Nuevo nombre del documento:", bib.doc.titulo); if (!t) return;
+  try { const r = await api("/api/admin/biblioteca/" + bib.doc.hash, { method: "PATCH", body: JSON.stringify({ titulo: t }) });
+    bib.doc.titulo = r.titulo; $("bib-titulo").textContent = r.titulo; toast("Nombre actualizado"); } catch (err) { toast(err.message); }
+});
+
+function limpiarResaltado() { if (window.CSS && CSS.highlights) { CSS.highlights.delete("visor-buscar"); CSS.highlights.delete("visor-activo"); } }
+function rango(pos, largo) {
+  const nodo = $("visor-texto").firstChild; if (!nodo) return null;
+  const r = new Range(); r.setStart(nodo, pos); r.setEnd(nodo, Math.min(pos + largo, nodo.length)); return r;
+}
+function irA(pos, largo, soloActivo) {
+  const r = rango(pos, largo); if (!r) return;
+  if (window.CSS && CSS.highlights) {
+    if (soloActivo) CSS.highlights.delete("visor-buscar");
+    CSS.highlights.set("visor-activo", new Highlight(r));
+  }
+  const cont = $("visor-scroll");
+  const dy = r.getBoundingClientRect().top - cont.getBoundingClientRect().top;
+  cont.scrollTop += dy - 90;
+  document.querySelectorAll("#visor-indice button").forEach((b) => b.classList.remove("activo"));
+  const idx = [...document.querySelectorAll("#visor-indice button")].reverse().find((b) => +b.dataset.pos <= pos);
+  if (idx) { idx.classList.add("activo"); idx.scrollIntoView({ block: "nearest" }); }
+}
+function buscarEnVisor(q, posInicial) {
+  limpiarResaltado();
+  q = (q || "").trim(); bib.coincidencias = []; bib.actual = -1;
+  if (!bib.doc || !q) { $("visor-cont").textContent = ""; return; }
+  const texto = bib.doc.texto; const m = q.match(/^\s*(?:art(?:[ií]culo)?\.?\s*)?(\d{1,4}(?:\.\d{1,2})?)\s*\.?\s*$/i);
+  if (m) {
+    for (const a of bib.doc.articulos) if (a.numero === m[1]) bib.coincidencias.push({ pos: a.pos, largo: a.etiqueta.length });
+  } else {
+    const bajo = texto.toLowerCase(), qb = q.toLowerCase(); let i = 0;
+    while (bib.coincidencias.length < 1000 && (i = bajo.indexOf(qb, i)) >= 0) { bib.coincidencias.push({ pos: i, largo: q.length }); i += qb.length; }
+  }
+  if (!bib.coincidencias.length) { $("visor-cont").textContent = m ? "Ese artículo no existe en este documento" : "Sin resultados"; return; }
+  if (window.CSS && CSS.highlights) {
+    CSS.highlights.set("visor-buscar", new Highlight(...bib.coincidencias.map((c) => rango(c.pos, c.largo)).filter(Boolean)));
+  }
+  let ini = 0;
+  if (posInicial != null) { const k = bib.coincidencias.findIndex((c) => c.pos >= posInicial); ini = k >= 0 ? k : 0; }
+  saltarCoincidencia(ini);
+}
+function saltarCoincidencia(i) {
+  const n = bib.coincidencias.length; if (!n) return;
+  bib.actual = (i + n) % n; const c = bib.coincidencias[bib.actual];
+  $("visor-cont").textContent = `${bib.actual + 1} de ${n}`;
+  irA(c.pos, c.largo, false);
+}
+$("visor-q").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return; e.preventDefault();
+  if (bib.q === $("visor-q").value && bib.coincidencias.length) saltarCoincidencia(bib.actual + (e.shiftKey ? -1 : 1));
+  else { bib.q = $("visor-q").value; buscarEnVisor(bib.q); }
+});
+$("visor-q").addEventListener("input", () => { clearTimeout(bibTemporizador); bibTemporizador = setTimeout(() => { bib.q = $("visor-q").value; buscarEnVisor(bib.q); }, 350); });
+$("visor-sig").addEventListener("click", () => saltarCoincidencia(bib.actual + 1));
+$("visor-prev").addEventListener("click", () => saltarCoincidencia(bib.actual - 1));
+
+/* Texto del artículo donde está la coincidencia activa (o el primero que se vea). */
+function articuloActual() {
+  if (!bib.doc || !bib.doc.articulos.length) return null;
+  const pos = bib.actual >= 0 ? bib.coincidencias[bib.actual].pos : 0;
+  const lista = bib.doc.articulos; let k = 0;
+  for (let i = 0; i < lista.length; i++) if (lista[i].pos <= pos) k = i;
+  const fin = k + 1 < lista.length ? lista[k + 1].pos : bib.doc.texto.length;
+  return { etiqueta: lista[k].etiqueta, texto: bib.doc.texto.slice(lista[k].pos, Math.min(fin, lista[k].pos + 3500)).trim() };
+}
+$("visor-copiar").addEventListener("click", () => {
+  const a = articuloActual(); if (!a) { toast("Busque un artículo primero"); return; }
+  navigator.clipboard.writeText(`${bib.doc.titulo}\n${a.texto}`); toast(`${a.etiqueta} copiado`);
+});
+$("visor-explicar").addEventListener("click", () => {
+  const a = articuloActual(); if (!a) { toast("Busque un artículo primero"); return; }
+  nuevaConversacion(); mostrarVista("chat");
+  $("entrada-texto").value = `Explícame en palabras simples este artículo de «${bib.doc.titulo}»: ${a.texto.slice(0, 1500)}`;
+  $("entrada-texto").focus(); toast("Revise la pregunta y pulse Enviar");
+});
+
 if (estado.token) cargarPerfil().catch(() => salir());
