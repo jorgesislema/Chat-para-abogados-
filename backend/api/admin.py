@@ -1,4 +1,4 @@
-"""
+﻿"""
 Rutas de administracion (unificadas, protegidas por RBAC: rol 'admin').
 
   - POST /api/admin/usuarios:   crea un nuevo usuario en un tenant.
@@ -38,6 +38,7 @@ from backend.api.esquemas import (
     PermisoOut,
 )
 from backend.core.seguridad import hashear_contrasena
+from backend.servicios.biblioteca import guardar_texto
 from backend.db.conexion import obtener_sesion_bd
 from backend.db.modelos import (
     ROLES_VALIDOS,
@@ -311,6 +312,16 @@ async def cargar_documento(  # noqa: PLR0915 - flujo completo a proposito
         )
     else:
         n_chunks = motor.ingestar_chunks(chunks, nombre_coleccion, metadata=metadata)
+
+    # Biblioteca: guarda el texto completo para poder leerlo en pantalla.
+    try:
+        _bd_texto = obtener_sesion_bd()
+        try:
+            guardar_texto(_bd_texto, hash_calculado, titulo, texto, categoria)
+        finally:
+            _bd_texto.close()
+    except Exception:  # noqa: BLE001 - el visor nunca rompe la ingesta
+        LOGGER.warning("No se pudo guardar el texto completo de %s", hash_calculado[:12], exc_info=True)
 
     # ---- 6) Persistir el hash en SQLite (orden: tras ingesta OK) ----
     bd = obtener_sesion_bd()
