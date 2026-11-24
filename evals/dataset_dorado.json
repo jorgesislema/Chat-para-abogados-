@@ -1,10 +1,10 @@
 {
-  "version": "1.0",
-  "descripcion": "Dataset dorado inicial para evaluar el RAG juridico. Las preguntas no contienen PII real; los nombres y datos son ficticios. El caso_005 valida explicitamente la Regla de Oro de gobernanza (la PII cruda NUNCA debe llegar al LLM).",
+  "version": "1.1",
+  "descripcion": "Dataset dorado inicial para evaluar el RAG juridico. Las preguntas no contienen PII real; los nombres y datos son ficticios. El caso_005 valida explicitamente la Regla de Oro de gobernanza (la PII cruda NUNCA debe llegar al LLM). Fase G2: 15 casos de articulo completo y literal (meta 100%).",
   "fecha_creacion": "2026-06-11",
   "modelo_evaluado_por_defecto": "meta-llama/llama-3-8b-instruct",
   "criterio_similitud_minimo": 0.55,
-  "criterio_fidelidad_minimo": 0.60,
+  "criterio_fidelidad_minimo": 0.6,
   "casos": [
     {
       "id": "caso_001_despido_improcedente",
@@ -59,8 +59,209 @@
       "respuesta_ideal": "La respuesta correcta es una explicacion juridica sobre despido procedente, pero CRITICO: el prompt enviado al LLM no debe contener ni 'Juan Perez' (debe ser [NOMBRE]), ni '12345678Z' (debe ser [DNI]), ni 'juan.perez@correo.com' (debe ser [EMAIL]), ni '15/03/2025' (debe ser [FECHA]), ni '600 123 456' (debe ser [TELEFONO]).",
       "criterios": {
         "prompt_ofuscado_no_contiene_pii_cruda": true,
-        "tokens_obligatorios_en_prompt": ["[NOMBRE]", "[DNI]", "[EMAIL]", "[FECHA]", "[TELEFONO]"],
+        "tokens_obligatorios_en_prompt": [
+          "[NOMBRE]",
+          "[DNI]",
+          "[EMAIL]",
+          "[FECHA]",
+          "[TELEFONO]"
+        ],
         "no_inventar_articulo": true
+      }
+    },
+    {
+      "id": "caso_g2_01_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 1 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 1 (texto ficticio de demostracion, marca MARCA-01).",
+      "respuesta_ideal": "\"Art. 1.- ... (transcripcion literal completa)\" Ley Quince, articulo 1.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-01",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_02_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 2 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 2 (texto ficticio de demostracion, marca MARCA-02).",
+      "respuesta_ideal": "\"Art. 2.- ... (transcripcion literal completa)\" Ley Quince, articulo 2.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-02",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_03_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 3 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 3 (texto ficticio de demostracion, marca MARCA-03).",
+      "respuesta_ideal": "\"Art. 3.- ... (transcripcion literal completa)\" Ley Quince, articulo 3.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-03",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_04_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 4 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 4 (texto ficticio de demostracion, marca MARCA-04).",
+      "respuesta_ideal": "\"Art. 4.- ... (transcripcion literal completa)\" Ley Quince, articulo 4.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-04",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_05_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 5 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 5 (texto ficticio de demostracion, marca MARCA-05).",
+      "respuesta_ideal": "\"Art. 5.- ... (transcripcion literal completa)\" Ley Quince, articulo 5.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-05",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_06_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 6 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 6 (texto ficticio de demostracion, marca MARCA-06).",
+      "respuesta_ideal": "\"Art. 6.- ... (transcripcion literal completa)\" Ley Quince, articulo 6.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-06",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_07_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 7 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 7 (texto ficticio de demostracion, marca MARCA-07).",
+      "respuesta_ideal": "\"Art. 7.- ... (transcripcion literal completa)\" Ley Quince, articulo 7.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-07",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_08_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 8 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 8 (texto ficticio de demostracion, marca MARCA-08).",
+      "respuesta_ideal": "\"Art. 8.- ... (transcripcion literal completa)\" Ley Quince, articulo 8.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-08",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_09_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 9 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 9 (texto ficticio de demostracion, marca MARCA-09).",
+      "respuesta_ideal": "\"Art. 9.- ... (transcripcion literal completa)\" Ley Quince, articulo 9.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-09",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_10_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 10 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 10 (texto ficticio de demostracion, marca MARCA-10).",
+      "respuesta_ideal": "\"Art. 10.- ... (transcripcion literal completa)\" Ley Quince, articulo 10.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-10",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_11_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 11 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 11 (texto ficticio de demostracion, marca MARCA-11).",
+      "respuesta_ideal": "\"Art. 11.- ... (transcripcion literal completa)\" Ley Quince, articulo 11.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-11",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_12_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 12 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 12 (texto ficticio de demostracion, marca MARCA-12).",
+      "respuesta_ideal": "\"Art. 12.- ... (transcripcion literal completa)\" Ley Quince, articulo 12.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-12",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_13_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 13 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 13 (texto ficticio de demostracion, marca MARCA-13).",
+      "respuesta_ideal": "\"Art. 13.- ... (transcripcion literal completa)\" Ley Quince, articulo 13.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-13",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_14_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 14 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 14 (texto ficticio de demostracion, marca MARCA-14).",
+      "respuesta_ideal": "\"Art. 14.- ... (transcripcion literal completa)\" Ley Quince, articulo 14.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-14",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
+      }
+    },
+    {
+      "id": "caso_g2_15_articulo_literal",
+      "categoria": "cita_literal",
+      "pregunta_cruda": "Dame el articulo 15 de la Ley Quince de demostracion",
+      "contexto_esperado": "Art. 15 (texto ficticio de demostracion, marca MARCA-15).",
+      "respuesta_ideal": "\"Art. 15.- ... (transcripcion literal completa)\" Ley Quince, articulo 15.",
+      "criterios": {
+        "articulo_completo_y_literal": true,
+        "debe_contener_marca": "MARCA-15",
+        "no_inventar_articulo": true,
+        "meta_articulo_completo": true
       }
     }
   ]

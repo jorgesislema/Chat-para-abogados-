@@ -17,6 +17,9 @@ ENV/
 
 # --- Bases de datos locales ---
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite3
 *.sqlite
 *.sql
@@ -79,3 +82,20 @@ Thumbs.db
 build/
 dist/
 *.whl
+
+# --- Trazabilidad local (bitacora de trabajo de IAs y personas) ---
+trazabilidad/
+
+# --- Inspeccion temporal de ChromaDB (higiene local) ---
+.tmp_chroma_inspect/
+
+
+docs_ia/
+trazabilidad/
+
+
+# --- Logs de ejecucion (pueden tener metadatos de uso) ---
+logs/
+
+# --- Respaldos locales de datos ---
+respaldos/

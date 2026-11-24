@@ -34,6 +34,7 @@ class UsuarioActual(TypedDict):
     tenant_id: int
     rol: str
     email: str
+    username: str
 
 
 def obtener_usuario_actual(token: str = Depends(_esquema_oauth)) -> UsuarioActual:
@@ -59,6 +60,7 @@ def obtener_usuario_actual(token: str = Depends(_esquema_oauth)) -> UsuarioActua
         "tenant_id": int(tenant_id),
         "rol": payload.get("rol", "abogado"),
         "email": payload.get("email", ""),
+        "username": payload.get("username", ""),
     }
 
 

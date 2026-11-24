@@ -20,6 +20,7 @@ que no toca disco).
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,7 +127,15 @@ class MotorVectorial:
             self._cliente = cliente
             self._es_efimero = True
         else:
-            ruta = Path(ruta_persistencia) if ruta_persistencia is not None else _RUTA_PERSISTENCIA_POR_DEFECTO
+            if ruta_persistencia is not None:
+                ruta = Path(ruta_persistencia)
+            elif os.getenv("RUTA_CHROMADB", "").strip():
+                # Respeta .env / pruebas. Una ruta relativa se cuenta desde la raiz del proyecto.
+                ruta = Path(os.environ["RUTA_CHROMADB"].strip())
+                if not ruta.is_absolute():
+                    ruta = Path(__file__).resolve().parents[2] / ruta
+            else:
+                ruta = _RUTA_PERSISTENCIA_POR_DEFECTO
             ruta.mkdir(parents=True, exist_ok=True)
             self._cliente = chromadb.PersistentClient(path=str(ruta))
             self._es_efimero = False
@@ -213,6 +222,36 @@ class MotorVectorial:
         # ChromaDB valida que ids, documents y metadatas tengan la misma
         # longitud; si llegan vacios, retornamos 0 arriba.
         coleccion.add(documents=chunks, ids=ids, metadatas=metadatas)
+        return len(chunks)
+
+    def ingestar_chunks_con_metadata(
+        self,
+        chunks: list[str],
+        nombre_coleccion: str,
+        metadatas: list[dict[str, Any]],
+    ) -> int:
+        """
+        Ingesta con metadata por chunk (Fase G2: articulos y partes).
+
+        Cada chunk lleva su propio dict (ej. articulo/parte/id_articulo);
+        se anaden `indice` y `coleccion` como en `ingestar_chunks`.
+        """
+        if not chunks:
+            return 0
+        if not nombre_coleccion or not nombre_coleccion.strip():
+            raise ErrorMotorVectorial("nombre_coleccion es obligatorio")
+        if len(metadatas) != len(chunks):
+            raise ErrorMotorVectorial("chunks y metadatas deben tener igual longitud")
+
+        coleccion = self.obtener_o_crear_coleccion(nombre_coleccion)
+        ids = [f"{nombre_coleccion}_{uuid.uuid4().hex[:12]}" for _ in chunks]
+        finales: list[dict[str, Any]] = []
+        for i, meta in enumerate(metadatas):
+            meta_base = dict(meta or {})
+            meta_base["indice"] = i
+            meta_base["coleccion"] = nombre_coleccion
+            finales.append(meta_base)
+        coleccion.add(documents=chunks, ids=ids, metadatas=finales)
         return len(chunks)
 
     # --------------------------------------------------------
@@ -305,6 +344,144 @@ class MotorVectorial:
         return resultados[:top_k]
 
     # --------------------------------------------------------
+    # Busqueda permiso-aware (Fase 2).
+    # --------------------------------------------------------
+
+    def buscar_en_colecciones(
+        self,
+        pregunta: str,
+        colecciones: list[str],
+        top_k: int = 5,
+        filtro_categoria: str | None = None,
+        where_por_coleccion: dict[str, dict[str, Any]] | None = None,
+    ) -> list[FragmentoRecuperado]:
+        """
+        Busca SOLO en las colecciones indicadas (lista explicita ya
+        filtrada por `backend/servicios/permisos.py`).
+
+        El filtro de permisos se aplica DENTRO del vector store:
+          - Solo se consultan las colecciones de la lista (nunca se
+            abre una coleccion fuera de ella para traer texto).
+          - `where_por_coleccion` permite un filtro `where` nativo de
+            ChromaDB por coleccion (ej. `{"hash_archivo": {"$in": [...]}}`
+            para conceder un documento concreto dentro de una coleccion
+            ajena). Se combina con `filtro_categoria` mediante `$and`.
+            El filtrado ocurre en el servidor: los chunks descartados
+            por `where` nunca llegan al proceso Python.
+
+        NOTA: la deteccion de "existe contenido restringido" va por
+        `mejor_puntuacion_en`, que no devuelve texto.
+        """
+        if not pregunta or not pregunta.strip():
+            return []
+        if top_k <= 0:
+            raise ValueError("top_k debe ser positivo")
+
+        filtro_efectivo: str | None = filtro_categoria
+        if filtro_efectivo == CATEGORIA_TODAS or filtro_efectivo == "":
+            filtro_efectivo = None
+        if filtro_efectivo is not None and filtro_efectivo not in CATEGORIAS_VALIDAS:
+            raise ValueError(
+                f"filtro_categoria invalido: {filtro_efectivo!r}. "
+                f"Valores validos: {CATEGORIAS_VALIDAS} o None."
+            )
+
+        resultados: list[FragmentoRecuperado] = []
+        for nombre in colecciones:
+            if not self.coleccion_existe(nombre):
+                continue
+            coleccion = self._cliente.get_collection(
+                name=nombre, embedding_function=self._ef
+            )
+            where_extra = (where_por_coleccion or {}).get(nombre)
+            resultados.extend(
+                self._consultar(
+                    coleccion,
+                    pregunta,
+                    top_k,
+                    nombre,
+                    filtro_categoria=filtro_efectivo,
+                    where_extra=where_extra,
+                )
+            )
+
+        resultados.sort(key=lambda f: f.puntuacion, reverse=True)
+        return resultados[:top_k]
+
+    def mejor_puntuacion_en(        self,
+        pregunta: str,
+        colecciones: list[str],
+        filtro_categoria: str | None = None,
+    ) -> float:
+        """
+        Indica si hay contenido relevante en las colecciones indicadas
+        SIN devolver texto (para decidir "sin acceso" sin filtrar).
+
+        Retorna la mejor puntuacion en [0, 1] (0.0 si no hay nada).
+        El caller compara contra un umbral y, si lo supera, responde
+        con el mensaje canned de denegacion. El texto del documento
+        prohibido NUNCA sale de ChromaDB hacia Python mas alla de la
+        puntuacion.
+        """
+        if not pregunta or not pregunta.strip():
+            return 0.0
+        mejor = 0.0
+        for nombre in colecciones:
+            if not self.coleccion_existe(nombre):
+                continue
+            try:
+                coleccion = self._cliente.get_collection(
+                    name=nombre, embedding_function=self._ef
+                )
+                kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": 1}
+                if filtro_categoria not in (None, "", CATEGORIA_TODAS):
+                    kwargs["where"] = {"categoria": filtro_categoria}
+                respuesta = coleccion.query(**kwargs)
+            except Exception:  # noqa: BLE001 - coleccion vacia o error: se ignora
+                continue
+            distancias = (respuesta.get("distances") or [[]])[0]
+            if distancias:
+                puntuacion = max(0.0, min(1.0, 1.0 - float(distancias[0])))
+                mejor = max(mejor, puntuacion)
+        return mejor
+
+    def obtener_articulo(
+        self, id_articulo: str, colecciones: list[str]
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Recupera el ARTICULO COMPLETO por `id_articulo` (Fase G2).
+
+        Junta todas sus partes en orden (`parte` 1..N) aunque el
+        vectorial solo haya matcheado una. Retorna (texto, metadata
+        de la primera parte). Si no existe, ("", {}).
+        """
+        partes: list[tuple[int, str, dict[str, Any]]] = []
+        for nombre in colecciones:
+            if not self.coleccion_existe(nombre):
+                continue
+            try:
+                coleccion = self._cliente.get_collection(
+                    name=nombre, embedding_function=self._ef
+                )
+                resp = coleccion.get(where={"id_articulo": id_articulo})
+            except Exception:  # noqa: BLE001 - se ignora y se sigue
+                continue
+            docs = resp.get("documents") or []
+            metas = resp.get("metadatas") or []
+            for doc, meta in zip(docs, metas):
+                meta = dict(meta or {})
+                try:
+                    orden = int(meta.get("parte", 1))
+                except (TypeError, ValueError):
+                    orden = 1
+                partes.append((orden, doc, meta))
+        if not partes:
+            return "", {}
+        partes.sort(key=lambda t: t[0])
+        texto = "\n\n".join(p[1] for p in partes).strip()
+        return texto, partes[0][2]
+
+    # --------------------------------------------------------
     # Utilidades internas.
     # --------------------------------------------------------
 
@@ -315,12 +492,22 @@ class MotorVectorial:
         top_k: int,
         coleccion_origen: str,
         filtro_categoria: str | None = None,
+        where_extra: dict[str, Any] | None = None,
     ) -> list[FragmentoRecuperado]:
         """Ejecuta `coleccion.query` y mapea el resultado a FragmentoRecuperado."""
         # ChromaDB acepta `where={"campo": "valor"}` para filtrar por metadata.
-        kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": top_k}
+        # `where_extra` (ej. hash_archivo $in) se combina con la categoria
+        # mediante `$and`. El filtrado ocurre en el servidor.
+        clauses: list[dict[str, Any]] = []
         if filtro_categoria is not None:
-            kwargs["where"] = {"categoria": filtro_categoria}
+            clauses.append({"categoria": filtro_categoria})
+        if where_extra:
+            clauses.append(where_extra)
+        kwargs: dict[str, Any] = {"query_texts": [pregunta], "n_results": top_k}
+        if len(clauses) == 1:
+            kwargs["where"] = clauses[0]
+        elif len(clauses) > 1:
+            kwargs["where"] = {"$and": clauses}
         try:
             respuesta = coleccion.query(**kwargs)
         except Exception as exc:  # noqa: BLE001 - chromadb lanza varias

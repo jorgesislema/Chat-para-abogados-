@@ -1,237 +1,123 @@
-# LegalRAG_SaaS
+# LegalRAG — Asistente con IA para bufetes de abogados
 
-> Plataforma SaaS multi-tenant para firmas de abogados.
-> Busqueda semantica + RAG sobre documentos legales con embeddings 100%
-> locales y razonamiento externalizado via OpenRouter.
+> Búsqueda semántica + RAG sobre documentos legales. Embeddings 100% locales,
+> razonamiento externalizado (SenseNova / Seek / OpenRouter) solo con texto
+> previamente ofuscado. Interfaz web propia, sin frameworks.
 
-## Que es esto
+![Login](docs/capturas/01-login.png)
 
-LegalRAG_SaaS combina:
+## Arranque en 1 comando
 
-- **Backend FastAPI** (puerto 8000): autenticacion, RBAC, ingesta de
-  PDFs/DOCX, motor vectorial ChromaDB y orquestacion del LLM.
-- **Frontend Streamlit** (puerto 8501): UI para que los abogados
-  suban expedientes y hagan preguntas juridicas.
-- **Embeddings locales** con `sentence-transformers/all-MiniLM-L6-v2`
-  (sin llamadas externas para vectorizar).
-- **LLM externo** via OpenRouter (solo recibe texto previamente
-  ofuscado por la capa de Gobernanza PII).
-
-## 🐳 Despliegue con Docker (Recomendado)
-
-La forma más fiable de ejecutar LegalRAG_SaaS en cualquier máquina (local o
-futuro VPS) es mediante Docker Compose. Los dos servicios se construyen
-desde sus respectivos Dockerfiles, comparten una red privada de Docker y
-persisten los datos de SQLite y ChromaDB en `backend/db/` mediante un
-bind-mount, de modo que los expedientes no se pierden al reiniciar los
-contenedores.
-
-### Arquitectura del `docker-compose.yml`
-
-| Servicio    | Imagen base           | Puerto host | Volumen de persistencia          | Red interna     |
-|-------------|-----------------------|-------------|----------------------------------|-----------------|
-| `backend`   | `python:3.11-slim`    | `8000`      | `./backend/db:/app/backend/db`   | `legalrag-net`  |
-| `frontend`  | `python:3.11-slim`    | `8501`      | (no requiere)                    | `legalrag-net`  |
-
-El frontend se conecta al backend usando el **nombre del servicio**
-(`http://backend:8000`) gracias a la red interna de Docker Compose.
-**Nunca uses `localhost`** dentro del contenedor.
-
-### Pre-requisitos
-
-- Docker Engine >= 24 y Docker Compose v2.
-- Archivo `.env` en la raíz (copia de `.env.ejemplo`) con al menos:
-  - `OPENROUTER_API_KEY`
-  - `SECRET_KEY_JWT`
-
-### Construir y arrancar
+> **Página local profesional: http://localhost:8000** (API + interfaz web
+> en un solo servicio Docker; el Streamlit de `frontend/` queda como legacy).
 
 ```bash
-# 1) Construir las imagenes (solo la primera vez, o cuando cambien los Dockerfiles)
-docker-compose build
-
-# 2) Levantar backend + frontend en segundo plano
-docker-compose up -d
-
-# 3) Ver logs en tiempo real
-docker-compose logs -f
+cp .env.ejemplo .env   # completar SECRET_KEY_JWT (>=32 chars) y la API key
+docker compose up -d --build   # o doble clic en iniciar_legalrag.bat
 ```
 
-Al cabo de unos 20-30 segundos (descarga de `sentence-transformers`
-incluida), la suite queda operativa:
+La demo se siembra sola en el primer arranque (`AUTO_SEMBRAR_DEMO=1`,
+idempotente; tarda unos minutos la primera vez porque descarga el modelo
+local de embeddings). Login demo: `m.vela` / `demo-2026`
+(admin: `admin.andrade` / `demo-2026`).
+Si el puerto 8000 lo ocupa otra app: `PUERTO_HOST=8081 docker compose up -d`
+y abrir http://localhost:8081.
 
-| URL                                   | Esperado                                        |
-|---------------------------------------|-------------------------------------------------|
-| `http://localhost:8000/salud`         | `{"estado":"ok","servicio":"LegalRAG_SaaS"}`    |
-| `http://localhost:8501`               | UI de login de Streamlit                        |
-
-### Comandos utiles
+Sin Docker:
 
 ```bash
-docker-compose ps              # Estado de los contenedores
-docker-compose logs backend    # Solo logs del backend
-docker-compose restart         # Reiniciar ambos servicios
-docker-compose down            # Detener y eliminar contenedores (los datos en backend/db/ PERSISTEN)
-docker-compose down -v         # Detener y eliminar tambien el volumen (BORRA expedientes)
-docker-compose exec backend bash   # Abrir shell dentro del backend
+cp .env.ejemplo .env
+python scripts/sembrar_demo.py --reset
+uvicorn backend.main:app --port 8000
 ```
 
-### Persistencia y Gobernanza
+Sin `SECRET_KEY_JWT` válida la app **no arranca** (fail-fast de seguridad).
 
-- **SQLite** (`backend/db/legalrag.db`) y **ChromaDB**
-  (`backend/db/chroma_data/`) viven dentro de `./backend/db/`, que está
-  bind-mounteado a `/app/backend/db` en el contenedor. Si borras los
-  contenedores con `docker-compose down` (sin `-v`), los expedientes
-  siguen intactos en tu disco local.
-- Las claves secretas se inyectan via `env_file: .env` y nunca se
-  bakean dentro de la imagen. **No commitees `.env`**: ya está en
-  `.gitignore`.
+Scripts: `iniciar_legalrag.sh` / `iniciar_legalrag.bat` (Docker → :8000),
+`iniciar_saas.sh` (legacy: backend + Streamlit sin Docker).
+Detener todo: `docker compose down` (los datos de `backend/db/` persisten).
 
-### Estructura nueva del proyecto
+## Usuarios demo (tras la siembra)
+
+Contraseñas solo para demo. Datos 100% ficticios.
+
+| Usuario | Rol | Clave |
+|---|---|---|
+| `admin.andrade` | admin | `demo-2026` |
+| `m.vela`, `j.paredes`, `a.torres`, `p.salazar`, `l.beltran`, `d.armijos` | abogado | `demo-2026` |
+| `r.cadena` … `t.espinoza` (12 clientes) | cliente | `demo-2026` |
+
+Demo incluida: 25 casos, 200 conversaciones (últimos 90 días), 3 textos
+legales de demostración en el vector global.
+
+![Conversaciones](docs/capturas/02-conversaciones.png)
+![Chat](docs/capturas/03-chat.png)
+
+## Qué hace
+
+- **Chat con streaming en vivo**, citas clicables, copiar, sugerencias,
+  aviso fijo ("Asistente con IA. No reemplaza el criterio de un abogado").
+- **Burbuja flotante** arrastrable con no-leídos; recuerda si quedó abierta
+  o minimizada. Widget incrustable en cualquier web con una línea:
+
+  ```html
+  <script src="http://localhost:8000/widget.js" data-base="http://localhost:8000" defer></script>
+  ```
+
+- **Permisos por usuario/grupo × documento/colección**, filtrados *dentro*
+  de la búsqueda vectorial. Sin permiso: denegación sin filtrar texto.
+- **Artículos completos y literales**: corte por artículo en ingesta,
+  recuperación exacta ("dame el artículo 54 del Código de Trabajo"),
+  continuación automática ante cortes, verificación anti-invento.
+- **Panel admin** (solo `admin`): usuarios, matriz de permisos con
+  interruptores, documentos (subir/borrar), casos, auditoría y métricas
+  (consultas/día, temas, documentos citados).
+
+  ![Admin](docs/capturas/05-admin.png)
+
+- **Conversaciones**: buscador, filtros (materia/caso/fecha), agrupadas por
+  Hoy/Ayer/Esta semana/Antes, renombrar, archivar, exportar a PDF.
+
+  ![Móvil](docs/capturas/08-movil.png)
+
+## Arquitectura
 
 ```
-.
-|-- backend/
-|   |-- Dockerfile           # Imagen del backend
-|   `-- ... (api, core, db, servicios, main.py)
-|-- frontend/
-|   |-- Dockerfile           # Imagen del frontend
-|   |-- requerimientos.txt   # Dependencias minimas (streamlit + httpx)
-|   `-- app.py
-|-- docker-compose.yml       # Orquestacion backend + frontend
-|-- .env                     # Variables secretas (NO commitear)
-|-- .env.ejemplo             # Plantilla de variables
-`-- requerimientos.txt       # Dependencias del backend
+navegador ──→ FastAPI :8000 ──┬──→ SQLite (usuarios, casos, convs, auditoría)
+   (UI propia /)              ├──→ ChromaDB + sentence-transformers (local)
+                              └──→ LLM OpenAI-compatible (SenseNova/Seek/OpenRouter)
 ```
 
-## Como ejecutar el proyecto (Modo Produccion Local)
+- Un solo contenedor expone la app (`backend`, `:8000`). El volumen
+  `./backend/db` persiste SQLite + ChromaDB entre reinicios.
+- Proveedor: `LLM_PROVEEDOR` (`sensenova` → `https://token.sensenova.ai/v1`,
+  `seek` → `https://100milionseek.top/v1`, `openrouter`, `hms`, `custom`).
+  Key por prioridad: `LLM_API_KEY > SENSENOVA_API_KEY > SEEK_API_KEY >
+  HMS_API_KEY > OPENROUTER_API_KEY`.
+- Regla de oro: ningún texto crudo con PII sale sin `ofuscar_texto()`
+  (incluye cédula/RUC/teléfono de Ecuador). Solo la pregunta ofuscada se
+  audita.
 
-### Linux / macOS (recomendado)
+## Decisiones
 
-Un solo comando levanta backend + frontend con limpieza automatica
-de procesos al salir (Ctrl+C).
+- Vanilla HTML/CSS/JS sin frameworks: cero build, servido por FastAPI.
+- Permisos con `where` nativo de ChromaDB (el texto prohibido nunca llega a Python).
+- Denegación canned sin LLM (determinista, testeable, sin filtración).
+- Citas literales con temperatura 0 y verificación contra el texto guardado.
+- Streamlit legacy se conserva pero ya no es la UI principal.
+
+## Límites conocidos
+
+- Umbrales RAG calibrados en demo (`RAG_UMBRAL_RELEVANCIA=0.55`, etc.).
+- Rate limit en memoria (un proceso). Auditoría admin con prefijo `[ADMIN]`.
+- BDs anteriores a Fase 2/F no reciben las columnas/tablas nuevas
+  (re-sembrar). Cambiar el modelo de embeddings invalida los vectores.
+- Evals: 20 casos (5 base + 15 G2); meta ≥85% pendiente de corrida con LLM real.
+- El chat RAG no consulta la tabla `casos` con SQL (los filtros exactos
+  viven en `GET /api/casos`).
+
+## Tests
 
 ```bash
-# 1) Dar permisos de ejecucion al script (solo la primera vez)
-chmod +x iniciar_saas.sh
-
-# 2) Arrancar todo
-./iniciar_saas.sh
+python -m pytest tests/ -q   # 212 tests en verde, todo con mocks (sin red ni gasto)
 ```
-
-El script:
-
-- Activa `.venv` si existe.
-- Levanta el backend en `http://localhost:8000`.
-- Espera 3 segundos a que ChromaDB y SQLite se inicialicen.
-- Levanta el frontend en `http://localhost:8501`.
-- Captura Ctrl+C y mata AMBOS procesos (backend + frontend)
-  limpiamente.
-
-Para detener el sistema: `Ctrl+C` en la terminal donde corre el script.
-
-### Windows (PowerShell)
-
-El script `.sh` no se ejecuta directamente en Windows. Tienes dos
-opciones equivalentes:
-
-**Opcion A: dos terminales separadas** (la mas simple).
-
-```powershell
-# Terminal 1: backend
-.\.venv\Scripts\Activate.ps1
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
-
-# Terminal 2: frontend
-.\.venv\Scripts\Activate.ps1
-streamlit run frontend/app.py --server.port 8501
-```
-
-**Opcion B: archivo `.bat` equivalente** (un solo doble-clic).
-
-Crea `iniciar_saas.bat` en la raiz:
-
-```bat
-@echo off
-echo Iniciando LegalRAG SaaS B2B...
-
-REM Activar entorno virtual
-call .venv\Scripts\activate.bat
-
-REM Lanzar backend en segundo plano
-start "Backend FastAPI" cmd /k "uvicorn backend.main:app --host 0.0.0.0 --port 8000"
-
-REM Esperar inicializacion de ChromaDB y SQLite
-timeout /t 3 /nobreak > NUL
-
-REM Lanzar frontend
-streamlit run frontend/app.py --server.port 8501
-```
-
-Nota: el frontend hereda la ventana actual (al cerrarla se cierra
-Streamlit, pero el backend queda en su propia ventana). Para matar
-ambos: cerrar las dos ventanas.
-
-## Verificacion de la instalacion
-
-Tras arrancar, abre dos URLs para confirmar que todo responde:
-
-| URL | Esperado |
-|---|---|
-| `http://localhost:8000/salud` | `{"estado":"ok","servicio":"LegalRAG_SaaS"}` |
-| `http://localhost:8501` | UI de login con sidebar de Streamlit |
-
-## Suite de tests
-
-```bash
-.\.venv\Scripts\Activate.ps1
-pytest -v
-```
-
-Estado actual: **117 tests pasando** (ofuscacion, auth, RBAC, ingesta,
-vector store, motor RAG, evaluador de calidad).
-
-## Estructura del proyecto
-
-```
-.
-|-- backend/                # FastAPI + SQLAlchemy + servicios
-|   |-- api/                # Routers REST
-|   |-- core/               # Configuracion, JWT, hashing
-|   |-- db/                 # Modelos + engine SQLAlchemy
-|   |-- servicios/          # Ofuscacion, gestion_pdf, rag_motor, vectorial
-|   `-- main.py             # Entry point FastAPI
-|-- frontend/
-|   |-- app.py              # UI principal
-|   `-- paginas/
-|       `-- admin.py        # UI de administracion (RBAC)
-|-- tests/                  # Suite pytest (TDD)
-|-- evals/                  # Evaluaciones de calidad del LLM
-|-- docs_ia/                # Memoria del proyecto
-|-- datos_prueba/           # [GITIGNORED] PDFs/DOCX de prueba
-|-- iniciar_saas.sh         # Script de arranque (Unix)
-|-- conftest.py             # Fixtures compartidos
-|-- pytest.ini              # Configuracion de pytest
-|-- requerimientos.txt      # Dependencias
-`-- .env.ejemplo            # Plantilla de variables de entorno
-```
-
-## Configuracion (.env)
-
-Copia `.env.ejemplo` a `.env` y rellena al menos:
-
-```env
-OPENROUTER_API_KEY=sk-or-v1-...   # https://openrouter.ai/keys
-SECRET_KEY_JWT=<64+ caracteres aleatorios>
-```
-
-El resto de variables tienen defaults sensatos. Ver
-`docs_ia/01_arquitectura.md` para el detalle completo.
-
-## Documentacion interna
-
-- [Arquitectura detallada](./docs_ia/01_arquitectura.md)
-- [Gobernanza y PII](./docs_ia/02_gobernanza.md)
-- [Estado actual del proyecto](./docs_ia/03_estado_actual.md)
-- [Testing vs Evals](./docs_ia/04_testing_y_evals.md)
-- [Mapa de la arquitectura](./mapa.md)

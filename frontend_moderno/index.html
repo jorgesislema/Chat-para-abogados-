@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bufete Andrade &amp; Asociados — Asistente Legal IA</title>
+<meta name="description" content="Asistente legal con IA para bufetes: consultas, casos y documentos.">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="assets/mirlo.png" type="image/png">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ LOGIN ============ -->
+  <section id="vista-login" class="login" aria-label="Inicio de sesión">
+    <div class="login-tarjeta">
+      <div class="login-marca">
+        <img class="marca-logo" src="assets/mirlo.png" alt="Mirlo — marca profesional" width="44" height="44">
+        <div>
+          <h1>Bufete Andrade &amp; Asociados</h1>
+          <p>Asistente legal con inteligencia artificial</p>
+        </div>
+      </div>
+      <form id="form-login">
+        <label for="login-usuario">Usuario</label>
+        <input id="login-usuario" name="usuario" type="text" autocomplete="username" placeholder="ej: m.vela" required minlength="3">
+        <label for="login-clave">Contraseña</label>
+        <input id="login-clave" name="clave" type="password" autocomplete="current-password" placeholder="Su contraseña" required>
+        <p id="login-error" class="error" role="alert" hidden></p>
+        <button type="submit" class="btn-primario" id="btn-entrar">Iniciar sesión</button>
+        <button type="button" class="btn-secundario" id="btn-demo">Ver demo</button>
+      </form>
+      <p class="login-nota">Sus documentos se analizan localmente. Ningún dato personal sale sin protección.</p>
+    </div>
+  </section>
+
+  <!-- ============ APP ============ -->
+  <section id="vista-app" class="app" hidden aria-label="Aplicación">
+    <button id="btn-menu" class="btn-icono solo-movil" aria-label="Abrir conversaciones"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M3 5h16M3 11h16M3 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+
+    <aside id="barra" class="barra" aria-label="Conversaciones">
+      <div class="barra-cabecera">
+        <div class="marca-mini">
+          <img src="assets/mirlo.png" alt="" width="28" height="28">
+          <span>Bufete Andrade</span>
+        </div>
+        <button id="btn-nueva" class="btn-primario btn-chico" title="Nueva conversación">+ Nueva</button>
+      </div>
+      <nav class="nav-vistas" aria-label="Secciones">
+        <button id="nav-biblioteca" class="nav-btn activo">Biblioteca</button>
+        <button id="nav-asistente" class="nav-btn">Asistente</button>
+        <button id="nav-admin" class="nav-btn" hidden>Admin</button>
+      </nav>
+      <div class="barra-busqueda">
+        <input id="buscar" type="search" placeholder="Buscar conversaciones…" aria-label="Buscar conversaciones">
+      </div>
+      <div class="barra-filtros">
+        <select id="filtro-materia" aria-label="Filtrar por materia">
+          <option value="">Todas las materias</option>
+        </select>
+        <button id="btn-archivadas" class="chip" aria-pressed="false" title="Mostrar archivadas">Archivadas</button>
+      </div>
+      <nav id="lista-convs" class="lista-convs" aria-label="Lista de conversaciones"></nav>
+      <div class="barra-pie">
+        <button id="btn-mas" class="btn-secundario btn-chico" hidden>Cargar más</button>
+        <div class="usuario-pie">
+          <span id="usuario-nombre" class="usuario-nombre"></span>
+          <span id="usuario-rol" class="usuario-rol"></span>
+        </div>
+        <div class="pie-acciones">
+          <button id="btn-tema" class="btn-icono" aria-label="Cambiar tema claro u oscuro"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 2.5v15A7.5 7.5 0 0 0 10 2.5z" fill="currentColor"/></svg></button>
+          <button id="btn-admin" class="btn-icono" aria-label="Panel de administración" hidden><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 1.8v2.4M10 15.8v2.4M1.8 10h2.4M15.8 10h2.4M4.2 4.2l1.7 1.7M14.1 14.1l1.7 1.7M15.8 4.2l-1.7 1.7M5.9 14.1l-1.7 1.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <button id="btn-salir" class="btn-icono" aria-label="Cerrar sesión"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 3H4v14h4M13 6l4 4-4 4M17 10H8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="btn-burbuja" class="btn-icono" aria-label="Minimizar a burbuja flotante"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="14.5" cy="14.5" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
+        </div>
+      </div>
+    </aside>
+    <div id="fondo-barra" class="fondo-barra" hidden></div>
+
+    <main class="centro">
+      <!-- Biblioteca -->
+      <div id="panel-biblioteca" class="panel-biblioteca">
+        <div id="bib-lista-vista" class="bib-vista">
+          <header class="chat-cabecera"><h2>Biblioteca jurídica</h2></header>
+          <div class="bib-barra">
+            <input id="bib-q" type="search" placeholder="Busque un documento por nombre, o escriba una frase y pulse Enter para buscar dentro de los textos…" aria-label="Buscar en la biblioteca">
+            <div class="bib-chips" role="group" aria-label="Tipo de documento">
+              <button class="chip" data-cat="" aria-pressed="true">Todo</button>
+              <button class="chip" data-cat="Leyes" aria-pressed="false">Leyes</button>
+              <button class="chip" data-cat="Jurisprudencia" aria-pressed="false">Jurisprudencia</button>
+              <button class="chip" data-cat="Expediente" aria-pressed="false">Expedientes</button>
+            </div>
+            <div id="bib-filtros" class="bib-filtros" hidden>
+              <select id="bib-tribunal" aria-label="Tribunal"><option value="">Todos los tribunales</option></select>
+              <select id="bib-anio" aria-label="Año"><option value="">Todos los años</option></select>
+              <select id="bib-materia" aria-label="Materia"><option value="">Todas las materias</option></select>
+              <button id="bib-limpiar" class="btn-secundario btn-chico">Limpiar filtros</button>
+            </div>
+          </div>
+          <div id="bib-resultados" class="bib-resultados"></div>
+        </div>
+        <div id="bib-visor-vista" class="bib-vista" hidden>
+          <header class="chat-cabecera">
+            <button id="bib-volver" class="btn-secundario btn-chico">← Biblioteca</button>
+            <h2 id="bib-titulo"></h2>
+            <button id="bib-ficha" class="btn-secundario btn-chico" hidden>Editar ficha</button>
+            <button id="bib-renombrar" class="btn-secundario btn-chico" hidden>Renombrar</button>
+          </header>
+          <p id="bib-ficha-linea" class="bib-ficha-linea" hidden></p>
+          <div class="visor-barra">
+            <input id="visor-q" type="search" placeholder="Artículo (ej. 188) o palabra…" aria-label="Buscar en el documento" autocomplete="off">
+            <span id="visor-cont" class="visor-cont" aria-live="polite"></span>
+            <button id="visor-prev" class="btn-secundario btn-chico" aria-label="Anterior">▲</button>
+            <button id="visor-sig" class="btn-secundario btn-chico" aria-label="Siguiente">▼</button>
+            <button id="visor-copiar" class="btn-secundario btn-chico">Copiar artículo</button>
+            <button id="visor-explicar" class="btn-primario btn-chico">Explicar con el asistente</button>
+          </div>
+          <div class="visor-cuerpo">
+            <aside id="visor-indice" class="visor-indice" aria-label="Índice de artículos"></aside>
+            <div id="visor-scroll" class="visor-scroll"><div id="visor-texto" class="visor-texto"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat -->
+      <div id="panel-chat" class="panel-chat">
+        <header class="chat-cabecera">
+          <h2 id="chat-titulo">Nueva conversación</h2>
+          <div class="chat-acciones">
+            <button id="btn-renombrar" class="btn-secundario btn-chico" title="Renombrar">Renombrar</button>
+            <button id="btn-archivar" class="btn-secundario btn-chico" title="Archivar">Archivar</button>
+            <button id="btn-exportar" class="btn-secundario btn-chico" title="Exportar a PDF">PDF</button>
+            <button id="btn-borrar" class="btn-secundario btn-chico peligro" title="Borrar">Borrar</button>
+          </div>
+        </header>
+        <div id="historial" class="historial" aria-live="polite" aria-label="Mensajes"></div>
+        <div id="sugerencias" class="sugerencias" aria-label="Sugerencias para empezar"></div>
+        <p class="aviso-fijo">Asistente con IA. No reemplaza el criterio de un abogado.</p>
+        <form id="form-chat" class="entrada">
+          <input id="entrada-texto" type="text" placeholder="Escriba su consulta jurídica…" aria-label="Escriba su consulta" autocomplete="off" maxlength="2000">
+          <button type="submit" class="btn-primario" aria-label="Enviar"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10l16-7-5 16-4-6-7-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
+        </form>
+      </div>
+
+      <!-- Admin -->
+      <div id="panel-admin" class="panel-admin" hidden>
+        <header class="chat-cabecera"><h2>Administración</h2><button id="btn-volver-chat" class="btn-secundario btn-chico">← Volver al chat</button></header>
+        <nav class="admin-tabs" role="tablist" aria-label="Secciones de administración">
+          <button role="tab" data-tab="usuarios" class="tab activo">Usuarios</button>
+          <button role="tab" data-tab="permisos" class="tab">Permisos</button>
+          <button role="tab" data-tab="docs" class="tab">Documentos</button>
+          <button role="tab" data-tab="casos" class="tab">Casos</button>
+          <button role="tab" data-tab="auditoria" class="tab">Auditoría</button>
+          <button role="tab" data-tab="metricas" class="tab">Métricas</button>
+          <button role="tab" data-tab="logs" class="tab">Registros</button>
+        </nav>
+        <div id="tab-usuarios" class="tab-panel" role="tabpanel"></div>
+        <div id="tab-permisos" class="tab-panel" role="tabpanel" hidden></div>
+        <div id="tab-docs" class="tab-panel" role="tabpanel" hidden></div>
+        <div id="tab-casos" class="tab-panel" role="tabpanel" hidden></div>
+        <div id="tab-auditoria" class="tab-panel" role="tabpanel" hidden></div>
+        <div id="tab-metricas" class="tab-panel" role="tabpanel" hidden></div>
+        <div id="tab-logs" class="tab-panel" role="tabpanel" hidden></div>
+      </div>
+    </main>
+
+    <aside id="panel-der" class="panel-der" aria-label="Fuentes y caso">
+      <nav class="admin-tabs" role="tablist" aria-label="Panel derecho">
+        <button role="tab" data-dtab="fuentes" class="tab dtab activo">Fuentes</button>
+        <button role="tab" data-dtab="caso" class="tab dtab">Caso</button>
+      </nav>
+      <div id="dtab-fuentes" class="tab-panel" role="tabpanel"></div>
+      <div id="dtab-caso" class="tab-panel" role="tabpanel" hidden></div>
+    </aside>
+  </section>
+
+  <!-- ============ BURBUJA ============ -->
+  <button id="burbuja" class="burbuja" hidden aria-label="Abrir asistente">
+    <img src="assets/mirlo.png" alt="" width="60" height="60">
+    <span id="burbuja-contador" class="burbuja-contador" hidden>0</span>
+  </button>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

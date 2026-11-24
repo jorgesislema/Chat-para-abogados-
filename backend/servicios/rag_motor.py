@@ -21,8 +21,10 @@ Modulos exportados:
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
@@ -44,12 +46,40 @@ from tenacity import (
 from backend.core.configuracion import obtener_configuracion
 from backend.db.vectorial import FragmentoRecuperado, MotorVectorial
 from backend.servicios.ofuscacion import ofuscar_texto
+from backend.servicios.permisos import (
+    MENSAJE_SIN_ACCESO,
+    AlcancePermitido,
+    PermisoRegla,
+    resolver_alcance,
+)
 
 # Logger del modulo: el orquestador registra degradaciones para que
 # operaciones pueda auditar caidas de OpenRouter sin tirar el servidor.
 LOGGER = logging.getLogger(__name__)
 
-# Mensaje canonico devuelto al cliente cuando la IA externa falla
+# Instruccion para citas literales (Fase G2): cuando el usuario pide un
+# articulo concreto, el modelo debe transcribirlo literal.
+INSTRUCCION_CITA_LITERAL: str = (
+    "Cuando te pidan un articulo, transcribelo COMPLETO y literal, entre "
+    "comillas, sin resumir ni omitir incisos. Despues, si ayuda, explicalo "
+    "en palabras simples. Indica siempre ley, numero de articulo y pagina. "
+    "Si el contexto no contiene el articulo pedido, dilo y no inventes."
+)
+
+# "Dame el articulo 54 del Codigo de Trabajo" -> (54, "codigo de trabajo").
+_PATRON_ARTICULO_EXACTO = re.compile(
+    r"(?:art[íi]culo|art\.)\s*(\d{1,4})", re.IGNORECASE
+)
+_PATRON_LEY_HINT = re.compile(
+    r"(?:c[óo]digo|ley|estatuto)\s+(?:de\s+|del\s+)?([A-Za-zÁÉÍÓÚÑáéíóúñ ]+?)(?:\?|,|\.|$)",
+    re.IGNORECASE,
+)
+
+# Aviso fijo: las respuestas con articulos largos pueden continuarse.
+AVISO_CORTE = (
+    " (Nota: la respuesta alcanzo el limite de longitud; "
+    "muestra el texto disponible.)"
+)
 # definitivamente (tras agotar reintentos o por error duro tipo 401).
 MENSAJE_DEGRADACION_IA: str = (
     "Error: El servicio de IA externa no respondio tras multiples "
@@ -63,11 +93,10 @@ PROMPT_SISTEMA_POR_DEFECTO: str = (
     "Eres un asistente legal estricto. Usa solo el siguiente contexto para "
     "responder. Si no esta en el contexto, indica explicitamente que no "
     "tienes informacion suficiente. No inventes datos personales ni cites "
-    "articulos que no aparezcan en el contexto."
+    "articulos que no aparezcan en el contexto. Cierra cada respuesta "
+    "juridica con este aviso fijo: 'Asistente con IA. No reemplaza el "
+    "criterio de un abogado.'"
 )
-
-_BASE_URL_OPENROUTER: str = "https://openrouter.ai/api/v1"
-
 
 @dataclass(frozen=True)
 class _FragmentoLegacy(FragmentoRecuperado):
@@ -93,12 +122,15 @@ __all__ = [
 
 class GeneradorRespuestaOpenRouter:
     """
-    Cliente ligero sobre la API de OpenRouter usando el SDK de OpenAI (sync).
+    Cliente ligero sobre un endpoint compatible con la API de OpenAI.
 
-    Inicializa un `OpenAI` cuya `base_url` apunta al endpoint de OpenRouter.
+    Por defecto apunta al proveedor configurado (`LLM_PROVEEDOR`:
+    openrouter | sensenova | hms | custom). Inicializa un `OpenAI`
+    cuya `base_url` apunta al endpoint del proveedor.
     La API key se resuelve en este orden:
       1. Argumento explicito al constructor (util para tests).
-      2. Variable de entorno OPENROUTER_API_KEY.
+      2. `LLM_API_KEY` / `SENSENOVA_API_KEY` / `SEEK_API_KEY` /
+         `HMS_API_KEY` / `OPENROUTER_API_KEY`.
       3. Valor cacheado en `backend.core.configuracion`.
     """
 
@@ -111,12 +143,16 @@ class GeneradorRespuestaOpenRouter:
         configuracion = obtener_configuracion()
         clave = (
             api_key
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("SENSENOVA_API_KEY")
+            or os.getenv("SEEK_API_KEY")
+            or os.getenv("HMS_API_KEY")
             or os.getenv("OPENROUTER_API_KEY")
-            or configuracion.openrouter_api_key
+            or configuracion.llm_api_key
         )
         self._modelo = modelo or configuracion.llm_modelo
         self._cliente = OpenAI(
-            base_url=base_url or _BASE_URL_OPENROUTER,
+            base_url=base_url or configuracion.llm_base_url,
             api_key=clave,
         )
 
@@ -128,10 +164,12 @@ class GeneradorRespuestaOpenRouter:
         self,
         prompt: str,
         temperatura: float = 0.2,
-        max_tokens: int = 512,
+        max_tokens: int | None = None,
         mensajes_sistema: list[str] | None = None,
     ) -> str:
         """Envia el prompt al LLM sincrono y devuelve el texto de la respuesta."""
+        if max_tokens is None:
+            max_tokens = obtener_configuracion().llm_max_tokens
         mensajes: list[dict[str, str]] = []
         if mensajes_sistema:
             for msj in mensajes_sistema:
@@ -231,30 +269,32 @@ class OrquestadorRAG:
         cliente_llm: AsyncOpenAI | None = None,
         modelo: str | None = None,
         prompt_sistema: str | None = None,
-        temperatura: float = 0.2,
-        max_tokens: int = 512,
-        top_k: int = 5,
+        temperatura: float | None = None,
+        max_tokens: int | None = None,
+        top_k: int | None = None,
         incluir_global: bool = True,
     ) -> None:
         self._motor = motor_vectorial
-        self._modelo = modelo or obtener_configuracion().llm_modelo
+        _cfg = obtener_configuracion()
+        self._modelo = modelo or _cfg.llm_modelo
         self._prompt_sistema = prompt_sistema or PROMPT_SISTEMA_POR_DEFECTO
-        self._temperatura = temperatura
-        self._max_tokens = max_tokens
-        self._top_k = top_k
+        self._temperatura = (
+            _cfg.rag_temperatura_citas if temperatura is None else temperatura
+        )
+        self._max_tokens = (
+            _cfg.llm_max_tokens if max_tokens is None else max_tokens
+        )
+        self._top_k = _cfg.rag_top_k if top_k is None else top_k
         self._incluir_global = incluir_global
 
         if cliente_llm is not None:
             self._cliente_llm = cliente_llm
         else:
             configuracion = obtener_configuracion()
-            clave = (
-                os.getenv("OPENROUTER_API_KEY")
-                or configuracion.openrouter_api_key
-            )
+            clave = configuracion.llm_api_key
             try:
                 self._cliente_llm: AsyncOpenAI | None = AsyncOpenAI(
-                    base_url=_BASE_URL_OPENROUTER,
+                    base_url=configuracion.llm_base_url,
                     api_key=clave,
                 )
             except Exception as exc:  # noqa: BLE001 - degradacion controlada
@@ -290,6 +330,12 @@ class OrquestadorRAG:
         pregunta_cruda: str,
         tenant_id: str | int,
         categoria: str | None = None,
+        rol: str = "abogado",
+        usuario_id: str | int | None = None,
+        grupo: str | None = None,
+        reglas_permiso: list | None = None,
+        colecciones_existentes: list[str] | None = None,
+        umbral_restringido: float | None = None,
     ) -> dict[str, Any]:
         """
         Ejecuta la cadena RAG completa y devuelve un dict estructurado.
@@ -301,6 +347,18 @@ class OrquestadorRAG:
             categoria: filtro opcional por categoria documental
                 ("Leyes", "Jurisprudencia", "Expediente"). Si es None
                 o la cadena vacia, no se filtra.
+            rol / usuario_id / grupo / reglas_permiso /
+            colecciones_existentes: si `reglas_permiso` es None, flujo
+                legacy (coleccion del tenant + global, sin filtro de
+                permisos). Si se provee, flujo permiso-aware (Fase 2):
+                la busqueda se limita a las colecciones permitidas y a
+                los documentos (hashes) concedidos; si hay contenido
+                relevante SOLO en zona prohibida, se responde con el
+                mensaje canned de denegacion SIN llamar al LLM (nunca
+                filtra ni una frase del documento ajeno).
+            umbral_restringido: puntuacion minima [0,1] para considerar
+                que existe contenido restringido (defecto por env
+                RAG_UMBRAL_RESTRINGIDO, 0.35).
 
         Retorna:
             {
@@ -312,6 +370,8 @@ class OrquestadorRAG:
                 "tokens_prompt": int,
                 "tokens_completion": int,
                 "categoria_filtrada": str | None,
+                "acceso_denegado": bool,
+                "colecciones_consultadas": list[str],
             }
 
         Resiliencia:
@@ -328,22 +388,105 @@ class OrquestadorRAG:
         # Paso A: ofuscar ANTES de cualquier otra operacion.
         pregunta_ofuscada = ofuscar_texto(pregunta_cruda)
 
-        # Paso B: buscar contexto en la coleccion del tenant + global.
-        nombre_coleccion = self._resolver_nombre_coleccion(tenant_id)
-        fragmentos = self._motor.buscar_contexto(
-            pregunta_ofuscada,
-            nombre_coleccion,
-            incluir_global=self._incluir_global,
-            top_k=self._top_k,
-            filtro_categoria=categoria,
-        )
+        # Paso A2 (Fase G2): si el usuario nombra un articulo concreto,
+        # se recupera directo por metadata (sin depender del ranking).
+        numero_art, ley_hint = self._detectar_articulo(pregunta_cruda)
+        modo_cita = numero_art is not None
+        articulo_original = ""
+        articulo_meta: dict[str, Any] = {}
+        if modo_cita:
+            colecciones_exactas = self._colecciones_para_exacta(
+                tenant_id=tenant_id,
+                rol=rol,
+                usuario_id=usuario_id if usuario_id is not None else tenant_id,
+                grupo=grupo,
+                reglas_permiso=reglas_permiso,
+                colecciones_existentes=colecciones_existentes or [],
+            )
+            estado_exact, articulo_original, articulo_meta = (
+                self._recuperar_articulo_exacto(
+                    numero_art, ley_hint, colecciones_exactas
+                )
+            )
+            if estado_exact == "ambiguo":
+                return self._construir_dict_ambiguo(
+                    pregunta_cruda=pregunta_cruda,
+                    pregunta_ofuscada=pregunta_ofuscada,
+                    numero_art=numero_art,
+                    leyes=articulo_meta.get("leyes", []),
+                    categoria=categoria,
+                    colecciones_consultadas=colecciones_exactas,
+                )
+            if estado_exact == "nada":
+                modo_cita = False  # sigue el flujo semantico normal
+
+        # Paso B: buscar contexto (legacy o permiso-aware).
+        acceso_denegado = False
+        colecciones_consultadas: list[str] = []
+        if reglas_permiso is None:
+            nombre_coleccion = self._resolver_nombre_coleccion(tenant_id)
+            fragmentos = self._motor.buscar_contexto(
+                pregunta_ofuscada,
+                nombre_coleccion,
+                incluir_global=self._incluir_global,
+                top_k=self._top_k,
+                filtro_categoria=categoria,
+            )
+            colecciones_consultadas = [nombre_coleccion]
+            if self._incluir_global:
+                from backend.db.vectorial import COLECCION_GLOBAL as _CG
+
+                if _CG != nombre_coleccion and self._motor.coleccion_existe(_CG):
+                    colecciones_consultadas.append(_CG)
+        else:
+            fragmentos, acceso_denegado, colecciones_consultadas = (
+                self._buscar_con_permisos(
+                    pregunta_ofuscada=pregunta_ofuscada,
+                    rol=rol,
+                    usuario_id=usuario_id if usuario_id is not None else tenant_id,
+                    grupo=grupo,
+                    reglas_permiso=reglas_permiso,
+                    colecciones_existentes=colecciones_existentes or [],
+                    categoria=categoria,
+                    umbral_restringido=umbral_restringido,
+                )
+            )
+            if acceso_denegado:
+                return self._construir_dict_denegacion(
+                    pregunta_cruda=pregunta_cruda,
+                    pregunta_ofuscada=pregunta_ofuscada,
+                    categoria=categoria,
+                    colecciones_consultadas=colecciones_consultadas,
+                )
+
+        # Paso B2 (Fase G2): expandir a articulo completo y presupuestar.
+        if modo_cita and articulo_original:
+            fragmentos = [
+                FragmentoRecuperado(
+                    id=articulo_meta.get("id", ""),
+                    texto=articulo_original,
+                    metadata=dict(articulo_meta),
+                    puntuacion=1.0,
+                    coleccion_origen=articulo_meta.get("coleccion", ""),
+                )
+            ]
+        else:
+            fragmentos = self._expandir_articulos(
+                fragmentos, colecciones_consultadas
+            )
+            fragmentos = self._aplicar_presupuesto(fragmentos)
 
         # Paso C: ensamblar el string de contexto legal.
         contexto_legal = self._ensamblar_contexto(fragmentos)
 
-        # Paso D: armar los mensajes para OpenRouter.
+        # Paso D: armar los mensajes para el proveedor.
+        prompt_sistema = self._prompt_sistema
+        temperatura = self._temperatura
+        if modo_cita and articulo_original:
+            prompt_sistema = f"{prompt_sistema}\n\n{INSTRUCCION_CITA_LITERAL}"
+            temperatura = 0.0
         system_prompt = (
-            f"{self._prompt_sistema}\n\n"
+            f"{prompt_sistema}\n\n"
             f"CONTEXTO:\n{contexto_legal}"
         )
         mensajes: list[dict[str, str]] = [
@@ -351,9 +494,11 @@ class OrquestadorRAG:
             {"role": "user", "content": pregunta_ofuscada},
         ]
 
-        # Paso E: llamada al LLM con reintentos + degradacion elegante.
+        # Paso E: llamada al LLM con continuacion + degradacion elegante.
         try:
-            respuesta_llm = await self._llamar_api_con_reintentos(mensajes)
+            texto_llm, tokens_p, tokens_c, cortado = (
+                await self._llamar_con_continuacion(mensajes, temperatura)
+            )
         except Exception as exc:  # noqa: BLE001 - degradacion controlada
             LOGGER.warning(
                 "OrquestadorRAG: LLM externo no disponible tras reintentos. "
@@ -368,28 +513,30 @@ class OrquestadorRAG:
                 categoria=categoria,
             )
 
-        contenido: Any = respuesta_llm.choices[0].message.content
-        texto_llm = contenido if isinstance(contenido, str) else str(contenido)
-
-        # Extraccion defensiva del uso de tokens: el SDK de OpenAI los
-        # expone en `respuesta.usage.{prompt,completion}_tokens`. Si el
-        # proveedor no los devuelve (o estamos en un mock sin esa
-        # propiedad), registramos 0.
-        tokens_prompt = 0
-        tokens_completion = 0
-        usage = getattr(respuesta_llm, "usage", None)
-        if usage is not None:
-            tokens_prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-            tokens_completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        # Paso F (Fase G2): verificacion anti-invento en citas literales.
+        # Si se pidio un articulo exacto y el modelo no lo reproduce,
+        # se entrega el texto original guardado, no el del modelo.
+        cita_verificada = False
+        if modo_cita and articulo_original:
+            texto_llm, cita_verificada = self._verificar_cita(
+                texto_llm, articulo_original
+            )
+        if cortado:
+            texto_llm = texto_llm.rstrip() + AVISO_CORTE
 
         return {
             "pregunta_original": pregunta_cruda,
             "pregunta_ofuscada": pregunta_ofuscada,
             "respuesta": texto_llm,
             "modelo": self._modelo,
-            "tokens_prompt": tokens_prompt,
-            "tokens_completion": tokens_completion,
+            "tokens_prompt": tokens_p,
+            "tokens_completion": tokens_c,
             "categoria_filtrada": categoria,
+            "acceso_denegado": acceso_denegado,
+            "colecciones_consultadas": colecciones_consultadas,
+            "cita_literal": modo_cita and bool(articulo_original),
+            "cita_verificada": cita_verificada,
+            "respuesta_cortada": cortado,
             "fuentes": [
                 {
                     "id": f.id,
@@ -400,6 +547,563 @@ class OrquestadorRAG:
                 }
                 for f in fragmentos
             ],
+        }
+
+    # --------------------------------------------------------
+    # Permisos (Fase 2): busqueda acotada + denegacion sin filtrar.
+    # --------------------------------------------------------
+
+    def _buscar_con_permisos(
+        self,
+        pregunta_ofuscada: str,
+        rol: str,
+        usuario_id: str | int,
+        grupo: str | None,
+        reglas_permiso: list[PermisoRegla],
+        colecciones_existentes: list[str],
+        categoria: str | None,
+        umbral_restringido: float | None,
+    ) -> tuple[list[FragmentoRecuperado], bool, list[str]]:
+        """
+        Busca solo en el alcance permitido. Retorna
+        (fragmentos, acceso_denegado, colecciones_consultadas).
+
+        - Los fragmentos provienen UNICAMENTE de colecciones
+          permitidas o de documentos (hashes) concedidos via `where`
+          nativo. El texto prohibido nunca llega al LLM.
+        - Si no hay fragmentos pero hay contenido relevante en zona
+          prohibida (>= umbral), acceso_denegado=True y el caller
+          responde con el mensaje canned SIN llamar al LLM.
+        """
+        try:
+            uid = int(usuario_id)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"usuario_id invalido: {usuario_id!r}. Debe ser convertible a int."
+            )
+        alcance: AlcancePermitido = resolver_alcance(
+            rol=rol,
+            usuario_id=uid,
+            grupo=grupo,
+            reglas=reglas_permiso,
+            colecciones_existentes=colecciones_existentes,
+        )
+        permitidas = sorted(alcance.colecciones)
+        prohibidas = [c for c in colecciones_existentes if c not in alcance.colecciones]
+
+        try:
+            umbral_relevancia = float(os.getenv("RAG_UMBRAL_RELEVANCIA", "0.55"))
+        except (TypeError, ValueError):
+            umbral_relevancia = 0.55
+
+        fragmentos = self._motor.buscar_en_colecciones(
+            pregunta_ofuscada,
+            permitidas,
+            top_k=self._top_k,
+            filtro_categoria=categoria,
+        )
+
+        # Documentos concedidos por hash dentro de colecciones ajenas:
+        # filtro `where` nativo (el servidor solo devuelve esos chunks).
+        if alcance.hashes_documentos and prohibidas:
+            where_hash = {"hash_archivo": {"$in": sorted(alcance.hashes_documentos)}}
+            fragmentos.extend(
+                self._motor.buscar_en_colecciones(
+                    pregunta_ofuscada,
+                    prohibidas,
+                    top_k=self._top_k,
+                    filtro_categoria=categoria,
+                    where_por_coleccion={c: where_hash for c in prohibidas},
+                )
+            )
+            fragmentos.sort(key=lambda f: f.puntuacion, reverse=True)
+            fragmentos = fragmentos[: self._top_k]
+
+        mejor_permitido = max((f.puntuacion for f in fragmentos), default=0.0)
+        relevantes = [f for f in fragmentos if f.puntuacion >= umbral_relevancia]
+        if relevantes:
+            return relevantes, False, permitidas
+
+        # Sin fragmentos relevantes: ¿hay contenido relevante SOLO en
+        # zona prohibida? Debe superar el umbral absoluto Y estar
+        # claramente por encima del mejor permitido (margen), para no
+        # denegar cuando todo es irrelevante.
+        umbral = umbral_restringido
+        if umbral is None:
+            try:
+                umbral = float(os.getenv("RAG_UMBRAL_RESTRINGIDO", "0.35"))
+            except (TypeError, ValueError):
+                umbral = 0.35
+        try:
+            margen = float(os.getenv("RAG_MARGEN_RESTRINGIDO", "0.15"))
+        except (TypeError, ValueError):
+            margen = 0.15
+        mejor = self._motor.mejor_puntuacion_en(
+            pregunta_ofuscada, prohibidas, filtro_categoria=categoria
+        )
+        if mejor >= umbral and mejor > mejor_permitido + margen:
+            return [], True, permitidas
+        return [], False, permitidas
+
+    def _construir_dict_denegacion(
+        self,
+        pregunta_cruda: str,
+        pregunta_ofuscada: str,
+        categoria: str | None,
+        colecciones_consultadas: list[str],
+    ) -> dict[str, Any]:
+        """Respuesta canned de denegacion: mismo contrato, sin LLM."""
+        return {
+            "pregunta_original": pregunta_cruda,
+            "pregunta_ofuscada": pregunta_ofuscada,
+            "respuesta": MENSAJE_SIN_ACCESO,
+            "modelo": self._modelo,
+            "tokens_prompt": 0,
+            "tokens_completion": 0,
+            "categoria_filtrada": categoria,
+            "acceso_denegado": True,
+            "colecciones_consultadas": colecciones_consultadas,
+            "fuentes": [],
+        }
+
+    # --------------------------------------------------------
+    # Fase G2: articulos completos y literales.
+    # --------------------------------------------------------
+
+    @staticmethod
+    def _detectar_articulo(pregunta: str) -> tuple[int | None, str | None]:
+        """Extrae (numero de articulo, pista de ley) o (None, None)."""
+        m = _PATRON_ARTICULO_EXACTO.search(pregunta or "")
+        if not m:
+            return None, None
+        numero = int(m.group(1))
+        hint = None
+        h = _PATRON_LEY_HINT.search(pregunta or "")
+        if h:
+            hint = h.group(1).strip().lower()
+        return numero, hint
+
+    def _colecciones_para_exacta(
+        self,
+        tenant_id: str | int,
+        rol: str,
+        usuario_id: str | int,
+        grupo: str | None,
+        reglas_permiso: list | None,
+        colecciones_existentes: list[str],
+    ) -> list[str]:
+        """Colecciones donde buscar el articulo exacto (respeta permisos)."""
+        if reglas_permiso is None:
+            col = [self._resolver_nombre_coleccion(tenant_id)]
+            if self._incluir_global:
+                from backend.db.vectorial import COLECCION_GLOBAL
+
+                col.append(COLECCION_GLOBAL)
+            return col
+        try:
+            uid = int(usuario_id)
+        except (TypeError, ValueError):
+            return []
+        alcance = resolver_alcance(
+            rol=rol,
+            usuario_id=uid,
+            grupo=grupo,
+            reglas=reglas_permiso,
+            colecciones_existentes=colecciones_existentes,
+        )
+        return sorted(alcance.colecciones)
+
+    def _recuperar_articulo_exacto(
+        self, numero: int, ley_hint: str | None, colecciones: list[str]
+    ) -> tuple[str, str, dict[str, Any]]:
+        """
+        Busca el articulo N por metadata (sin semantica).
+
+        Retorna ("ok", texto, meta) | ("ambiguo", "", {"leyes": [...]})
+        | ("nada", "", {}). La metadata incluye ley, articulo, pagina,
+        coleccion e id para la cita.
+        """
+        candidatos: list[tuple[str, dict[str, Any]]] = []
+        for nombre in colecciones:
+            if not self._motor.coleccion_existe(nombre):
+                continue
+            try:
+                col = self._motor._cliente.get_collection(
+                    name=nombre, embedding_function=self._motor._ef
+                )
+                resp = col.get(where={"articulo": numero})
+            except Exception:  # noqa: BLE001 - where no soportado o vacia
+                continue
+            docs = resp.get("documents") or []
+            metas = resp.get("metadatas") or []
+            ids = resp.get("ids") or []
+            vistos: set[str] = set()
+            for doc, meta, i in zip(docs, metas, ids):
+                meta = dict(meta or {})
+                id_art = str(meta.get("id_articulo", ""))
+                if not id_art or id_art in vistos:
+                    continue
+                vistos.add(id_art)
+                texto, meta0 = self._motor.obtener_articulo(id_art, [nombre])
+                if texto:
+                    meta0 = dict(meta0)
+                    meta0["id"] = i
+                    meta0["coleccion"] = nombre
+                    candidatos.append((texto, meta0))
+        if not candidatos:
+            return "nada", "", {}
+        if ley_hint:
+            filtrados = [
+                (t, m) for t, m in candidatos
+                if ley_hint in str(m.get("ley", "")).lower()
+                or ley_hint in str(m.get("titulo", "")).lower()
+            ]
+            if filtrados:
+                candidatos = filtrados
+        leyes = sorted({str(m.get("ley") or m.get("titulo") or c) for _, m in candidatos for c in [m.get("coleccion", "")]})
+        if len({str(m.get("ley") or m.get("titulo")) for _, m in candidatos}) > 1:
+            return "ambiguo", "", {"leyes": leyes}
+        texto, meta = candidatos[0]
+        return "ok", texto, meta
+
+    def _construir_dict_ambiguo(
+        self,
+        pregunta_cruda: str,
+        pregunta_ofuscada: str,
+        numero_art: int | None,
+        leyes: list[str],
+        categoria: str | None,
+        colecciones_consultadas: list[str],
+    ) -> dict[str, Any]:
+        """Pide aclaracion de la ley sin llamar al LLM."""
+        detalle = "; ".join(leyes[:5]) if leyes else "varias normas"
+        return {
+            "pregunta_original": pregunta_cruda,
+            "pregunta_ofuscada": pregunta_ofuscada,
+            "respuesta": (
+                f"Encontre el articulo {numero_art} en mas de una norma "
+                f"({detalle}). ¿A cual te refieres? Indica la ley o codigo."
+            ),
+            "modelo": self._modelo,
+            "tokens_prompt": 0,
+            "tokens_completion": 0,
+            "categoria_filtrada": categoria,
+            "acceso_denegado": False,
+            "colecciones_consultadas": colecciones_consultadas,
+            "cita_literal": False,
+            "cita_verificada": False,
+            "respuesta_cortada": False,
+            "fuentes": [],
+        }
+
+    def _expandir_articulos(
+        self, fragmentos: list[FragmentoRecuperado], colecciones: list[str]
+    ) -> list[FragmentoRecuperado]:
+        """
+        Dos niveles (G2): si un fragmento pertenece a un articulo
+        (`id_articulo`), se recupera el ARTICULO COMPLETO ordenado y
+        sustituye a los pedazos del mismo articulo (dedupe).
+        """
+        por_art: dict[str, list[FragmentoRecuperado]] = {}
+        sueltos: list[FragmentoRecuperado] = []
+        for f in fragmentos:
+            id_art = str((f.metadata or {}).get("id_articulo", ""))
+            if id_art:
+                por_art.setdefault(id_art, []).append(f)
+            else:
+                sueltos.append(f)
+        resultado = list(sueltos)
+        for id_art, grupo in por_art.items():
+            texto, meta = self._motor.obtener_articulo(id_art, colecciones)
+            if texto:
+                mejor = max(grupo, key=lambda g: g.puntuacion)
+                resultado.append(
+                    FragmentoRecuperado(
+                        id=mejor.id,
+                        texto=texto,
+                        metadata={**mejor.metadata, "articulo_completo": True},
+                        puntuacion=mejor.puntuacion,
+                        coleccion_origen=mejor.coleccion_origen,
+                    )
+                )
+            else:
+                resultado.extend(grupo)
+        resultado.sort(key=lambda f: f.puntuacion, reverse=True)
+        return resultado
+
+    def _aplicar_presupuesto(
+        self, fragmentos: list[FragmentoRecuperado]
+    ) -> list[FragmentoRecuperado]:
+        """Recorta por presupuesto de contexto (env, defecto 12000 chars)."""
+        try:
+            presupuesto = int(os.getenv("RAG_PRESUPUESTO_CONTEXTO_CARACTERES", "12000"))
+        except (TypeError, ValueError):
+            presupuesto = 12000
+        total = 0
+        salida: list[FragmentoRecuperado] = []
+        for f in fragmentos:
+            total += len(f.texto)
+            if total > presupuesto and salida:
+                break
+            salida.append(f)
+        return salida
+
+    async def _llamar_con_continuacion(
+        self, mensajes: list[dict[str, str]], temperatura: float
+    ) -> tuple[str, int, int, bool]:
+        """
+        Llama al LLM y, si termina por limite (`finish_reason == length`),
+        pide continuar (hasta 3 llamadas) y une el texto. Nunca devuelve
+        un corte silencioso: `cortado=True` si se agoto el presupuesto.
+        Usa la misma politica de reintentos que la llamada simple.
+        """
+        if self._cliente_llm is None:
+            raise ConnectionError("Cliente LLM no disponible")
+        textos: list[str] = []
+        tokens_p = 0
+        tokens_c = 0
+        msgs = list(mensajes)
+        cortado = False
+        for intento in range(3):
+            respuesta = await self._llamar_api_con_reintentos(msgs, temperatura)
+            contenido: Any = respuesta.choices[0].message.content
+            textos.append(contenido if isinstance(contenido, str) else str(contenido))
+            usage = getattr(respuesta, "usage", None)
+            if usage is not None:
+                tokens_p += int(getattr(usage, "prompt_tokens", 0) or 0)
+                tokens_c += int(getattr(usage, "completion_tokens", 0) or 0)
+            try:
+                finish = respuesta.choices[0].finish_reason
+            except (AttributeError, IndexError):
+                finish = "stop"
+            if finish != "length":
+                break
+            cortado = intento == 2
+            msgs = msgs + [
+                {"role": "assistant", "content": textos[-1]},
+                {"role": "user", "content": "Continua exactamente donde quedaste, sin repetir lo ya dicho."},
+            ]
+        return "".join(textos), tokens_p, tokens_c, cortado
+
+    @staticmethod
+    def _verificar_cita(texto_llm: str, original: str) -> tuple[str, bool]:
+        """
+        Anti-invento (G2): si el texto citado no coincide con el articulo
+        guardado, se entrega el ORIGINAL, no el del modelo.
+        """
+        def _norm(s: str) -> str:
+            return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+        norm_orig, norm_llm = _norm(original), _norm(texto_llm)
+        if norm_orig and norm_orig in norm_llm:
+            return texto_llm, True
+        ratio = difflib.SequenceMatcher(None, norm_orig, norm_llm).ratio()
+        if ratio >= 0.85:
+            return texto_llm, True
+        return (
+            f'"{original}"\n\n(Transcripcion literal del texto guardado.)',
+            False,
+        )
+
+    async def consultar_stream(
+        self,
+        pregunta_cruda: str,
+        tenant_id: str | int,
+        categoria: str | None = None,
+        rol: str = "abogado",
+        usuario_id: str | int | None = None,
+        grupo: str | None = None,
+        reglas_permiso: list | None = None,
+        colecciones_existentes: list[str] | None = None,
+        umbral_restringido: float | None = None,
+    ):
+        """
+        Variante en streaming de `consultar` (Fase F).
+
+        Generador async que produce dicts:
+          {"tipo": "denegado", "respuesta": ...}   sin acceso (sin LLM)
+          {"tipo": "token", "texto": ...}           trozo de respuesta
+          {"tipo": "hecho", "fuentes": [...], ...}  cierre con fuentes
+          {"tipo": "error", "respuesta": ...}       fallo del LLM
+
+        Las fuentes solo incluyen documentos permitidos. Si el cliente
+        LLM mockeado no soporta `stream=True`, se degrada a respuesta
+        completa en un solo token.
+        """
+        pregunta_ofuscada = ofuscar_texto(pregunta_cruda)
+        numero_art, ley_hint = self._detectar_articulo(pregunta_cruda)
+        modo_cita = numero_art is not None
+        articulo_original = ""
+        articulo_meta: dict[str, Any] = {}
+        colecciones_exactas = self._colecciones_para_exacta(
+            tenant_id=tenant_id,
+            rol=rol,
+            usuario_id=usuario_id if usuario_id is not None else tenant_id,
+            grupo=grupo,
+            reglas_permiso=reglas_permiso,
+            colecciones_existentes=colecciones_existentes or [],
+        )
+        if modo_cita:
+            estado_exact, articulo_original, articulo_meta = (
+                self._recuperar_articulo_exacto(
+                    numero_art, ley_hint, colecciones_exactas
+                )
+            )
+            if estado_exact == "ambiguo":
+                leyes = articulo_meta.get("leyes", [])
+                detalle = "; ".join(leyes[:5]) if leyes else "varias normas"
+                yield {
+                    "tipo": "denegado",
+                    "pregunta_ofuscada": "",
+                    "respuesta": (
+                        f"Encontre el articulo {numero_art} en mas de una norma "
+                        f"({detalle}). ¿A cual te refieres? Indica la ley o codigo."
+                    ),
+                    "fuentes": [],
+                    "categoria_filtrada": categoria,
+                }
+                return
+            if estado_exact == "nada":
+                modo_cita = False
+        if reglas_permiso is None:
+            nombre_coleccion = self._resolver_nombre_coleccion(tenant_id)
+            fragmentos = self._motor.buscar_contexto(
+                pregunta_ofuscada,
+                nombre_coleccion,
+                incluir_global=self._incluir_global,
+                top_k=self._top_k,
+                filtro_categoria=categoria,
+            )
+            permitidas: list[str] = [nombre_coleccion]
+            if self._incluir_global:
+                from backend.db.vectorial import COLECCION_GLOBAL as _CG2
+
+                if _CG2 != nombre_coleccion and self._motor.coleccion_existe(_CG2):
+                    permitidas.append(_CG2)
+            denegado = False
+        else:
+            fragmentos, denegado, permitidas = self._buscar_con_permisos(
+                pregunta_ofuscada=pregunta_ofuscada,
+                rol=rol,
+                usuario_id=usuario_id if usuario_id is not None else tenant_id,
+                grupo=grupo,
+                reglas_permiso=reglas_permiso,
+                colecciones_existentes=colecciones_existentes or [],
+                categoria=categoria,
+                umbral_restringido=umbral_restringido,
+            )
+        if modo_cita and articulo_original:
+            fragmentos = [
+                FragmentoRecuperado(
+                    id=articulo_meta.get("id", ""),
+                    texto=articulo_original,
+                    metadata=dict(articulo_meta),
+                    puntuacion=1.0,
+                    coleccion_origen=articulo_meta.get("coleccion", ""),
+                )
+            ]
+        else:
+            fragmentos = self._expandir_articulos(fragmentos, permitidas)
+            fragmentos = self._aplicar_presupuesto(fragmentos)
+        fuentes = [
+            {
+                "id": f.id,
+                "texto": f.texto,
+                "metadata": f.metadata,
+                "puntuacion": f.puntuacion,
+                "coleccion_origen": f.coleccion_origen,
+            }
+            for f in fragmentos
+        ]
+        if denegado:
+            # Sin eco de la pregunta: el evento no repite terminos que
+            # podrian pertenecer al documento prohibido.
+            yield {
+                "tipo": "denegado",
+                "pregunta_ofuscada": "",
+                "respuesta": MENSAJE_SIN_ACCESO,
+                "fuentes": [],
+                "categoria_filtrada": categoria,
+            }
+            return
+
+        prompt_sistema = self._prompt_sistema
+        temperatura = self._temperatura
+        if modo_cita and articulo_original:
+            prompt_sistema = f"{prompt_sistema}\n\n{INSTRUCCION_CITA_LITERAL}"
+            temperatura = 0.0
+        contexto_legal = self._ensamblar_contexto(fragmentos)
+        mensajes: list[dict[str, str]] = [
+            {"role": "system",
+             "content": f"{prompt_sistema}\n\nCONTEXTO:\n{contexto_legal}"},
+            {"role": "user", "content": pregunta_ofuscada},
+        ]
+        if self._cliente_llm is None:
+            yield {
+                "tipo": "error",
+                "pregunta_ofuscada": pregunta_ofuscada,
+                "respuesta": MENSAJE_DEGRADACION_IA,
+                "fuentes": fuentes,
+                "categoria_filtrada": categoria,
+            }
+            return
+        # En modo cita se acumula para verificar antes de mostrar.
+        acumulado: list[str] = []
+        cortado_stream = False
+        try:
+            for _ in range(3):
+                flujo = await self._cliente_llm.chat.completions.create(
+                    model=self._modelo,
+                    messages=mensajes,  # type: ignore[arg-type]
+                    temperature=temperatura,
+                    max_tokens=self._max_tokens,
+                    stream=True,
+                )
+                finish = "stop"
+                async for trozo in flujo:
+                    try:
+                        delta = trozo.choices[0].delta.content
+                    except (AttributeError, IndexError):
+                        delta = None
+                    try:
+                        finish = trozo.choices[0].finish_reason or finish
+                    except (AttributeError, IndexError):
+                        pass
+                    if delta:
+                        acumulado.append(str(delta))
+                        if not (modo_cita and articulo_original):
+                            yield {"tipo": "token", "texto": str(delta)}
+                if finish != "length":
+                    break
+                cortado_stream = True
+                mensajes = mensajes + [
+                    {"role": "assistant", "content": "".join(acumulado)},
+                    {"role": "user", "content": "Continua exactamente donde quedaste, sin repetir lo ya dicho."},
+                ]
+        except Exception as exc:  # noqa: BLE001 - degradacion controlada
+            LOGGER.warning("OrquestadorRAG: stream del LLM fallo: %s", exc)
+            yield {
+                "tipo": "error",
+                "pregunta_ofuscada": pregunta_ofuscada,
+                "respuesta": MENSAJE_DEGRADACION_IA,
+                "fuentes": fuentes,
+                "categoria_filtrada": categoria,
+            }
+            return
+        if modo_cita and articulo_original:
+            texto_final, _ = self._verificar_cita("".join(acumulado), articulo_original)
+            yield {"tipo": "token", "texto": texto_final}
+        elif cortado_stream:
+            yield {"tipo": "token", "texto": AVISO_CORTE}
+        yield {
+            "tipo": "hecho",
+            "pregunta_ofuscada": pregunta_ofuscada,
+            "respuesta": "",
+            "fuentes": fuentes,
+            "tokens_prompt": 0,
+            "tokens_completion": 0,
+            "categoria_filtrada": categoria,
+            "colecciones_consultadas": permitidas,
         }
 
     # --------------------------------------------------------
@@ -416,6 +1120,7 @@ class OrquestadorRAG:
     async def _llamar_api_con_reintentos(
         self,
         mensajes: list[dict[str, str]],
+        temperatura: float | None = None,
     ) -> Any:
         """
         Invoca `chat.completions.create` con reintentos exponenciales.
@@ -444,7 +1149,7 @@ class OrquestadorRAG:
         return await self._cliente_llm.chat.completions.create(
             model=self._modelo,
             messages=mensajes,  # type: ignore[arg-type]
-            temperature=self._temperatura,
+            temperature=self._temperatura if temperatura is None else temperatura,
             max_tokens=self._max_tokens,
         )
 

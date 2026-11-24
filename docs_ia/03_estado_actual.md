@@ -3,6 +3,24 @@
 > Snapshot vivo de que modulos estan construidos, que funciona y que
 > queda pendiente. Se actualiza al cerrar cada iteracion de desarrollo.
 
+## Estado Fases 0-2, F, G2 (2026-11-24, rama `mejora/portafolio`)
+
+- **Suite pytest en verde: 216 passed, 0 failed** (2026-11-24, FastAPI 0.115).
+  Las cifras 59/77/94/97 de abajo son historicas, previas a las fases.
+- Routers unificados (`auth/admin/chat`); `SECRET_KEY_JWT` fail-fast;
+  rate limit login; auditoria `[ADMIN]`; PII Ecuador; roles
+  admin/abogado/cliente con matriz de permisos y filtro vectorial;
+  proveedor LLM configurable (SenseNova `token.sensenova.ai`,
+  Seek `100milionseek.top`, OpenRouter, HMS, custom).
+- Interfaz propia en `/` (FastAPI static): login, 3 zonas, streaming
+  SSE, burbuja flotante + `widget.js`, admin completo, claro/oscuro,
+  responsive, capturas en `docs/capturas/`.
+- Conversaciones (CRUD, filtros, PDF), casos estructurados, metricas y
+  auditoria reales, seed demo (19 usuarios, 25 casos, 200 convs).
+- G2: corte por articulo, articulo completo ordenado, cita exacta por
+  metadata, continuacion anti-corte, verificacion anti-invento.
+- Evals: 20 casos (5 base + 15 G2). Meta ≥85% pendiente de corrida real.
+
 ## Orquestador RAG (NUEVO)
 
 > **Orquestador RAG implementado y conectado al endpoint de FastAPI. Busqueda vectorial y llamadas a OpenRouter integradas mediante asincronismo.**

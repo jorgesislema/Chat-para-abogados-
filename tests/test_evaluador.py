@@ -127,8 +127,8 @@ def test_pipeline_dry_run_genera_reporte_y_lo_anexa(tmp_path: Path) -> None:
         dry_run=True,
     )
 
-    # 5 casos en el dataset dorado actual.
-    assert resumen.total_casos == 5
+    # 5 casos base + 15 de cita literal G2 en el dataset actual.
+    assert resumen.total_casos == 20
     assert resumen.modo == "dry-run"
     assert 0.0 <= resumen.similitud_media <= 1.0
     assert 0.0 <= resumen.fidelidad_media <= 1.0

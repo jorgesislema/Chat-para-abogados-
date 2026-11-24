@@ -28,6 +28,7 @@ if str(_RAIZ) not in sys.path:
 
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-no-real-calls")
 os.environ.setdefault("SECRET_KEY_JWT", "test-secret-key-for-pytest-only")
+os.environ["LEGALRAG_TESTING"] = "1"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -35,6 +36,7 @@ def _variables_de_entorno_para_tests():
     """Asegura que las variables esten presentes en TODOS los tests."""
     os.environ["OPENROUTER_API_KEY"] = "test-key-no-real-calls"
     os.environ["SECRET_KEY_JWT"] = "test-secret-key-for-pytest-only"
+    os.environ["LEGALRAG_TESTING"] = "1"
     yield
 
 

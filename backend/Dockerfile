@@ -17,13 +17,15 @@ COPY requerimientos.txt /app/requerimientos.txt
 RUN pip install -r /app/requerimientos.txt
 
 COPY backend/ /app/backend/
-COPY datos_prueba/ /app/datos_prueba/
+COPY frontend_moderno/ /app/frontend_moderno/
+COPY scripts/ /app/scripts/
 
-RUN mkdir -p /app/backend/db
+RUN mkdir -p /app/backend/db \
+    && chmod +x /app/backend/entrada_docker.sh
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS http://localhost:8000/salud || exit 1
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/backend/entrada_docker.sh"]

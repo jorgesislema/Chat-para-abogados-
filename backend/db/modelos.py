@@ -11,10 +11,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
 
-# Roles validos en el sistema (RBAC).
+# Roles validos en el sistema (RBAC, Fase 2).
+#   admin:   UNICO que crea/edita/borra usuarios, sube/borra libros y
+#            documentos, y decide QUE puede ver cada usuario o grupo.
+#   abogado: solo consulta y chatea, y solo sobre lo permitido.
+#   cliente: solo consulta, y solo sobre sus propios casos (sin acceso
+#            a la base global de leyes salvo permiso explicito).
 ROL_ADMIN: str = "admin"
 ROL_ABOGADO: str = "abogado"
-ROLES_VALIDOS: tuple[str, ...] = (ROL_ADMIN, ROL_ABOGADO)
+ROL_CLIENTE: str = "cliente"
+ROLES_VALIDOS: tuple[str, ...] = (ROL_ADMIN, ROL_ABOGADO, ROL_CLIENTE)
 
 
 def _utcnow() -> datetime:
@@ -62,6 +68,9 @@ class Usuario(Base):
     rol: Mapped[str] = mapped_column(
         String(40), default=ROL_ABOGADO, nullable=False
     )
+    # Grupo opcional (ej. "laboral-quito") para permisos por grupo:
+    # un Permiso con `grupo` aplica a todos los usuarios del grupo.
+    grupo: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
     fecha_alta: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False
     )
@@ -86,7 +95,14 @@ class Expediente(Base):
 
 
 class Mensaje(Base):
-    """Registro de cada pregunta/respuesta del chat juridico."""
+    """
+    Registro LEGACY de cada pregunta/respuesta (sin conversacion asociada).
+
+    DEPRECADO en Fase F: el historial vive en `conversaciones` +
+    `mensajes_chat`. Se conserva el modelo para no romper BDs existentes
+    (ningun endpoint lo escribe; la auditoria usa `RegistroAuditoria`).
+    No crear filas nuevas.
+    """
 
     __tablename__ = "mensajes"
 
@@ -186,14 +202,175 @@ class DocumentoIngestado(Base):
     )
 
 
+class Permiso(Base):
+    """
+    Permiso documento/libro/caso <-> usuario o grupo (Fase 2).
+
+    Solo el admin crea/edita/borra estas filas. El filtro se aplica
+    DENTRO de la busqueda vectorial (`backend/servicios/permisos.py`
+    + `MotorVectorial.buscar_en_colecciones`): un usuario NUNCA recibe
+    texto de algo que no puede ver.
+
+    - `usuario_id` o `grupo` (al menos uno; si ambos, aplica si coincide
+      cualquiera): a quien se concede/deniega.
+    - `recurso_tipo`: "coleccion" (ej. `casos_user_7`, `leyes_globales`)
+      o "documento" (un `hash_archivo` concreto de `documentos_ingestados`).
+    - `recurso_id`: nombre de la coleccion o hash del documento.
+    - `puede_ver`: True concede, False deniega explicitamente (el deny
+      gana sobre el grant, salvo la base propia/global del abogado).
+    """
+
+    __tablename__ = "permisos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    usuario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuarios.id"), nullable=True, index=True, default=None
+    )
+    grupo: Mapped[str | None] = mapped_column(String(120), nullable=True, default=None)
+    recurso_tipo: Mapped[str] = mapped_column(String(32), nullable=False)
+    recurso_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    puede_ver: Mapped[bool] = mapped_column(nullable=False, default=True)
+    creado_por: Mapped[int | None] = mapped_column(nullable=True, default=None)
+    fecha_alta: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
+class Caso(Base):
+    """
+    Caso/juicio del bufete con datos estructurados (Fase D).
+
+    Los filtros exactos (materia, estado, numero de proceso) se hacen
+    sobre estas columnas; la busqueda semantica va sobre ChromaDB.
+    Todos los datos son ficticios en demo.
+    """
+
+    __tablename__ = "casos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    numero_proceso: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    materia: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    juzgado: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    estado: Mapped[str] = mapped_column(String(60), nullable=False, default="abierto")
+    cliente_nombre: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    abogado_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usuarios.id"), nullable=True, default=None
+    )
+    fecha_ingreso: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    fecha_audiencia: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    # Username del cliente dueno del caso (para visibilidad del rol cliente).
+    cliente_username: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+
+
+class Conversacion(Base):
+    """Hilo de chat de un usuario (Fase E/F)."""
+
+    __tablename__ = "conversaciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    usuario_id: Mapped[int] = mapped_column(
+        ForeignKey("usuarios.id"), nullable=False, index=True
+    )
+    titulo: Mapped[str] = mapped_column(String(200), nullable=False, default="Sin titulo")
+    materia: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    caso_id: Mapped[int | None] = mapped_column(
+        ForeignKey("casos.id"), nullable=True, default=None
+    )
+    etiquetas: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    archivada: Mapped[bool] = mapped_column(nullable=False, default=False)
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+    actualizada_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class MensajeChat(Base):
+    """Un mensaje dentro de una conversacion (rol user|assistant)."""
+
+    __tablename__ = "mensajes_chat"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversacion_id: Mapped[int] = mapped_column(
+        ForeignKey("conversaciones.id"), nullable=False, index=True
+    )
+    rol: Mapped[str] = mapped_column(String(20), nullable=False)
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    fuentes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    creada_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
 __all__ = [
+    "Caso",
+    "Conversacion",
     "DocumentoIngestado",
     "Expediente",
     "Mensaje",
+    "MensajeChat",
+    "Permiso",
     "RegistroAuditoria",
     "ROL_ABOGADO",
     "ROL_ADMIN",
+    "ROL_CLIENTE",
     "ROLES_VALIDOS",
     "Tenant",
     "Usuario",
 ]
+
+
+class TextoDocumento(Base):
+    """
+    Texto completo de un documento ingestado, para la Biblioteca (visor).
+
+    El vector store solo guarda pedazos; el visor necesita el texto entero
+    y la posicion de cada articulo para saltar a "Art. 6". Se guarda al
+    ingestar y, para documentos viejos, se reconstruye la primera vez que
+    alguien los abre.
+    """
+
+    __tablename__ = "textos_documento"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hash_archivo: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    titulo: Mapped[str] = mapped_column(String(500), nullable=False)
+    texto: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON: [{"etiqueta": "Art. 6", "numero": "6", "pos": 1234}, ...]
+    articulos_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
+class FichaDocumento(Base):
+    """
+    Datos para filtrar la Biblioteca: tribunal, anio, materia y numero de caso.
+
+    Se extraen del texto al ingestar (o la primera vez que se abre el
+    documento) y el admin puede corregirlos.
+    """
+
+    __tablename__ = "fichas_documento"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hash_archivo: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    tribunal: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    anio: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    materia: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    numero_proceso: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    tema: Mapped[str] = mapped_column(String(600), nullable=False, default="")

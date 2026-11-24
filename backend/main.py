@@ -1,4 +1,4 @@
-"""
+﻿"""
 Punto de entrada de la aplicacion FastAPI.
 
 Crea la instancia de la app, monta los routers, configura CORS para el
@@ -8,12 +8,18 @@ de la base de datos relacional.
 
 from __future__ import annotations
 
+import logging
+import os
+import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from backend.api import admin, auth, chat, rutas_admin, rutas_auth, rutas_chat
+from backend.api import admin, auth, biblioteca, chat, conversaciones, logs
+from backend.core.registro_logs import MiddlewareRegistro, configurar_logs
 from backend.db.base import Base
 from backend.db.conexion import engine
 
@@ -22,6 +28,17 @@ from backend.db.conexion import engine
 async def lifespan(_: FastAPI):
     """Crea las tablas al arrancar y libera recursos al cerrar."""
     Base.metadata.create_all(bind=engine)
+    # Precalienta el modelo de busqueda para que la primera consulta no tarde ~1 minuto.
+    if os.getenv("LEGALRAG_TESTING") != "1":
+        def _precalentar() -> None:
+            try:
+                from backend.api.dependencias import obtener_motor_vectorial
+
+                obtener_motor_vectorial()
+            except Exception:  # noqa: BLE001 - si falla, se carga en la primera consulta
+                logging.getLogger(__name__).warning("No se pudo precalentar el motor vectorial", exc_info=True)
+
+        threading.Thread(target=_precalentar, daemon=True).start()
     yield
     # Limpieza: SQLAlchemy cierra el engine automaticamente al finalizar el proceso.
 
@@ -35,6 +52,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+configurar_logs()
+app.add_middleware(MiddlewareRegistro)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -47,14 +66,30 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
-app.include_router(rutas_auth.router)
 app.include_router(admin.router)
-app.include_router(rutas_admin.router)
 app.include_router(chat.router)
-app.include_router(rutas_chat.router)
+app.include_router(conversaciones.router)
+app.include_router(logs.router)
+app.include_router(biblioteca.router)
+
+
+# Alias en español para compatibilidad con tests y docs (`aplicacion`).
+# El objeto canónico es `app` (convención uvicorn `backend.main:app`).
+aplicacion = app
 
 
 @app.get("/salud", tags=["meta"])
 def salud() -> dict[str, str]:
     """Endpoint de healthcheck basico para monitoreo."""
     return {"estado": "ok", "servicio": "LegalRAG_SaaS"}
+
+
+# Interfaz web propia (Fase F): servida por FastAPI en `/`.
+# El directorio no existe en instalaciones solo-API: se monta si esta.
+_DIR_FRONTEND = Path(__file__).resolve().parents[1] / "frontend_moderno"
+if _DIR_FRONTEND.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(_DIR_FRONTEND), html=True),
+        name="frontend",
+    )
