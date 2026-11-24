@@ -20,6 +20,7 @@ que no toca disco).
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,7 +127,15 @@ class MotorVectorial:
             self._cliente = cliente
             self._es_efimero = True
         else:
-            ruta = Path(ruta_persistencia) if ruta_persistencia is not None else _RUTA_PERSISTENCIA_POR_DEFECTO
+            if ruta_persistencia is not None:
+                ruta = Path(ruta_persistencia)
+            elif os.getenv("RUTA_CHROMADB", "").strip():
+                # Respeta .env / pruebas. Una ruta relativa se cuenta desde la raiz del proyecto.
+                ruta = Path(os.environ["RUTA_CHROMADB"].strip())
+                if not ruta.is_absolute():
+                    ruta = Path(__file__).resolve().parents[2] / ruta
+            else:
+                ruta = _RUTA_PERSISTENCIA_POR_DEFECTO
             ruta.mkdir(parents=True, exist_ok=True)
             self._cliente = chromadb.PersistentClient(path=str(ruta))
             self._es_efimero = False
