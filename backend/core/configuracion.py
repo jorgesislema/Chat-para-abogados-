@@ -28,6 +28,51 @@ if _env_path.exists():
 VALOR_DEFECTO_INSEGURO = "cambiar-en-produccion"
 LONGITUD_MINIMA_JWT = 32
 
+# Proveedores LLM soportados (todos con API compatible OpenAI).
+#   - openrouter: https://openrouter.ai/api/v1 (defecto historico)
+#   - sensenova:  https://api.sensenova.cn/compatible-mode/v1
+#   - hms:        configurable via LLM_BASE_URL (nube Huawei / gateway propio)
+#   - custom:     cualquier endpoint compatible via LLM_BASE_URL
+PROVEEDOR_OPENROUTER = "openrouter"
+PROVEEDOR_SENSENOVA = "sensenova"
+PROVEEDOR_HMS = "hms"
+PROVEEDOR_CUSTOM = "custom"
+
+_URLS_POR_DEFECTO: dict[str, str] = {
+    PROVEEDOR_OPENROUTER: "https://openrouter.ai/api/v1",
+    PROVEEDOR_SENSENOVA: "https://api.sensenova.cn/compatible-mode/v1",
+    PROVEEDOR_HMS: "https://api.hms.ai/v1",
+    PROVEEDOR_CUSTOM: "",
+}
+
+
+def _resolver_llm_api_key() -> str:
+    """Prioridad: LLM_API_KEY > SENSENOVA_API_KEY > HMS_API_KEY > OPENROUTER_API_KEY."""
+    return (
+        os.getenv("LLM_API_KEY", "")
+        or os.getenv("SENSENOVA_API_KEY", "")
+        or os.getenv("HMS_API_KEY", "")
+        or os.getenv("OPENROUTER_API_KEY", "")
+    )
+
+
+def _resolver_llm_base_url(proveedor: str) -> str:
+    """LLM_BASE_URL manda; si no, URL canonica del proveedor."""
+    explicita = os.getenv("LLM_BASE_URL", "").strip()
+    if explicita:
+        return explicita
+    return _URLS_POR_DEFECTO.get(proveedor, _URLS_POR_DEFECTO[PROVEEDOR_OPENROUTER])
+
+
+def _resolver_llm_modelo(proveedor: str) -> str:
+    """LLM_MODELO manda; si no, modelo economico por proveedor."""
+    explicito = os.getenv("LLM_MODELO", "").strip()
+    if explicito:
+        return explicito
+    if proveedor == PROVEEDOR_SENSENOVA:
+        return "SenseNova-V6-Pro"
+    return "meta-llama/llama-3-8b-instruct"
+
 
 def _validar_secret_jwt(valor: str) -> str:
     """Fail-fast: sin secreto valido no se arranca."""
@@ -55,6 +100,9 @@ class Configuracion:
 
     openrouter_api_key: str
     llm_modelo: str
+    llm_proveedor: str
+    llm_base_url: str
+    llm_api_key: str
     secret_key_jwt: str
     algoritmo_jwt: str
     expiracion_token_minutos: int
@@ -85,10 +133,16 @@ def _flotante_env(nombre: str, defecto: float) -> float:
 @lru_cache(maxsize=1)
 def obtener_configuracion() -> Configuracion:
     """Devuelve la configuracion cargada una sola vez (cacheada)."""
+    proveedor = os.getenv("LLM_PROVEEDOR", PROVEEDOR_OPENROUTER).strip().lower()
+    if proveedor not in _URLS_POR_DEFECTO:
+        proveedor = PROVEEDOR_OPENROUTER
 
     return Configuracion(
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-        llm_modelo=os.getenv("LLM_MODELO", "meta-llama/llama-3-8b-instruct"),
+        llm_modelo=_resolver_llm_modelo(proveedor),
+        llm_proveedor=proveedor,
+        llm_base_url=_resolver_llm_base_url(proveedor),
+        llm_api_key=_resolver_llm_api_key(),
         secret_key_jwt=_validar_secret_jwt(os.getenv("SECRET_KEY_JWT", "")),
         algoritmo_jwt=os.getenv("ALGORITMO_JWT", "HS256"),
         expiracion_token_minutos=_entero_env("EXPIRACION_TOKEN_MINUTOS", 30),
