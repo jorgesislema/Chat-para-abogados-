@@ -43,7 +43,7 @@ button { font-family: inherit; cursor: pointer; }
 .login-tarjeta { background: var(--fondo); border-radius: 16px; padding: 32px;
   width: min(440px, 100%); box-shadow: var(--sombra); }
 .login-marca { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
-.marca-logo { width: 44px; height: 44px; flex: none; }
+.marca-logo { width: 44px; height: 44px; flex: none; border-radius: 50%; }
 .login-marca h1 { font-size: 19px; margin: 0; color: var(--marino); }
 [data-tema="oscuro"] .login-marca h1 { color: var(--texto); }
 .login-marca p { margin: 2px 0 0; color: var(--texto-2); font-size: 13px; }
@@ -71,7 +71,7 @@ button { font-family: inherit; cursor: pointer; }
 .barra-cabecera { padding: 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .marca-mini { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--marino); font-size: 14px; }
 [data-tema="oscuro"] .marca-mini { color: var(--texto); }
-.marca-mini svg { width: 28px; height: 28px; }
+.marca-mini svg, .marca-mini img { width: 28px; height: 28px; border-radius: 50%; }
 .barra-busqueda, .barra-filtros { padding: 0 14px 10px; display: flex; gap: 8px; }
 .barra input[type="search"], .barra select { flex: 1; padding: 8px 10px; border: 1px solid var(--borde);
   border-radius: 8px; font-size: 14px; background: var(--fondo); color: var(--texto); min-width: 0; }
@@ -171,7 +171,7 @@ button { font-family: inherit; cursor: pointer; }
 /* Burbuja */
 .burbuja { position: fixed; right: 22px; bottom: 22px; width: 60px; height: 60px; border-radius: 50%;
   border: 2px solid var(--dorado); background: none; padding: 0; box-shadow: var(--sombra); z-index: 100; cursor: grab; }
-.burbuja svg { width: 100%; height: 100%; display: block; border-radius: 50%; }
+.burbuja svg, .burbuja img { width: 100%; height: 100%; display: block; border-radius: 50%; }
 .burbuja-contador { position: absolute; top: -4px; right: -4px; background: var(--peligro); color: #fff;
   border-radius: 50%; width: 22px; height: 22px; font-size: 12px; font-weight: 700;
   display: grid; place-items: center; }
