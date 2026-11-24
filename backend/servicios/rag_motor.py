@@ -93,12 +93,15 @@ __all__ = [
 
 class GeneradorRespuestaOpenRouter:
     """
-    Cliente ligero sobre la API de OpenRouter usando el SDK de OpenAI (sync).
+    Cliente ligero sobre un endpoint compatible con la API de OpenAI.
 
-    Inicializa un `OpenAI` cuya `base_url` apunta al endpoint de OpenRouter.
+    Por defecto apunta al proveedor configurado (`LLM_PROVEEDOR`:
+    openrouter | sensenova | hms | custom). Inicializa un `OpenAI`
+    cuya `base_url` apunta al endpoint del proveedor.
     La API key se resuelve en este orden:
       1. Argumento explicito al constructor (util para tests).
-      2. Variable de entorno OPENROUTER_API_KEY.
+      2. `LLM_API_KEY` / `SENSENOVA_API_KEY` / `HMS_API_KEY` /
+         `OPENROUTER_API_KEY` (ver `backend.core.configuracion`).
       3. Valor cacheado en `backend.core.configuracion`.
     """
 
@@ -111,12 +114,15 @@ class GeneradorRespuestaOpenRouter:
         configuracion = obtener_configuracion()
         clave = (
             api_key
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("SENSENOVA_API_KEY")
+            or os.getenv("HMS_API_KEY")
             or os.getenv("OPENROUTER_API_KEY")
-            or configuracion.openrouter_api_key
+            or configuracion.llm_api_key
         )
         self._modelo = modelo or configuracion.llm_modelo
         self._cliente = OpenAI(
-            base_url=base_url or _BASE_URL_OPENROUTER,
+            base_url=base_url or configuracion.llm_base_url,
             api_key=clave,
         )
 
@@ -255,13 +261,10 @@ class OrquestadorRAG:
             self._cliente_llm = cliente_llm
         else:
             configuracion = obtener_configuracion()
-            clave = (
-                os.getenv("OPENROUTER_API_KEY")
-                or configuracion.openrouter_api_key
-            )
+            clave = configuracion.llm_api_key
             try:
                 self._cliente_llm: AsyncOpenAI | None = AsyncOpenAI(
-                    base_url=_BASE_URL_OPENROUTER,
+                    base_url=configuracion.llm_base_url,
                     api_key=clave,
                 )
             except Exception as exc:  # noqa: BLE001 - degradacion controlada
