@@ -95,7 +95,7 @@
 
       <!-- Admin -->
       <div id="panel-admin" class="panel-admin" hidden>
-        <header class="chat-cabecera"><h2>Administración</h2></header>
+        <header class="chat-cabecera"><h2>Administración</h2><button id="btn-volver-chat" class="btn-secundario btn-chico">← Volver al chat</button></header>
         <nav class="admin-tabs" role="tablist" aria-label="Secciones de administración">
           <button role="tab" data-tab="usuarios" class="tab activo">Usuarios</button>
           <button role="tab" data-tab="permisos" class="tab">Permisos</button>
@@ -103,6 +103,7 @@
           <button role="tab" data-tab="casos" class="tab">Casos</button>
           <button role="tab" data-tab="auditoria" class="tab">Auditoría</button>
           <button role="tab" data-tab="metricas" class="tab">Métricas</button>
+          <button role="tab" data-tab="logs" class="tab">Registros</button>
         </nav>
         <div id="tab-usuarios" class="tab-panel" role="tabpanel"></div>
         <div id="tab-permisos" class="tab-panel" role="tabpanel" hidden></div>
@@ -110,6 +111,7 @@
         <div id="tab-casos" class="tab-panel" role="tabpanel" hidden></div>
         <div id="tab-auditoria" class="tab-panel" role="tabpanel" hidden></div>
         <div id="tab-metricas" class="tab-panel" role="tabpanel" hidden></div>
+        <div id="tab-logs" class="tab-panel" role="tabpanel" hidden></div>
       </div>
     </main>
 
