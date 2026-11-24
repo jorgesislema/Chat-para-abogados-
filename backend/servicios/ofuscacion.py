@@ -86,6 +86,25 @@ _PATRON_TELEFONO = re.compile(
 # Fecha en formato dd/mm/aaaa o dd-mm-aaaa.
 _PATRON_FECHA = re.compile(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")
 
+# --- Ecuador: cedula (10 digitos) y RUC (13 digitos, cedula + 001). ---
+# Se detectan como secuencias de 10/13 digitos con separadores opcionales.
+# NOTA: para evitar falsos positivos con tarjetas (13-19 digitos), el
+# patron de tarjeta se aplica DESPUES del RUC y solo si no hubo match
+# de RUC... en la practica el orden de `ofuscar_texto` pone RUC/cedula
+# antes que tarjeta. La cedula suelta de 10 digitos tambien cubre
+# telefonos fijos sin prefijo, lo cual es aceptable (mejor ofuscar de mas).
+_PATRON_RUC_EC = re.compile(r"\b\d{10}001\b")
+
+# Cedula ecuatoriana: 10 digitos exactos (2 de provincia + 8 + verificador).
+# Se aplica ANTES que tarjeta (13-19 digitos) para no colisionar.
+_PATRON_CEDULA_EC = re.compile(r"\b\d{10}\b")
+
+# Telefono Ecuador: +593 con movil de 9 digitos (9xxxxxxxx), fijo con
+# codigo de area (02/03/04/05/06/07 + 7 digitos), o movil local 09xxxxxxxx.
+_PATRON_TELEFONO_EC = re.compile(
+    r"(?:\+593[\s.-]?)?(?:9\d[\s.-]?\d{3}[\s.-]?\d{4}|0[2-7][\s.-]?\d{3}[\s.-]?\d{4})\b"
+)
+
 # Nombre propio + 1 a 3 apellidos (palabras capitalizadas).
 # Se ordena por longitud descendente para que "José" no se empate con "Jose".
 _NOMBRES_ORDENADOS = sorted(NOMBRES_PROPIOS_CONOCIDOS, key=len, reverse=True)
@@ -114,8 +133,11 @@ def ofuscar_texto(texto: str) -> str:
     resultado = texto
     # Orden importante: patrones mas especificos primero para evitar
     # que un patron general (tarjeta) "robe" contenido de uno mas
-    # concreto (IBAN).
+    # concreto (IBAN, RUC).
     resultado = _PATRON_IBAN.sub("[IBAN]", resultado)
+    resultado = _PATRON_RUC_EC.sub("[RUC]", resultado)
+    resultado = _PATRON_TELEFONO_EC.sub("[TELEFONO]", resultado)
+    resultado = _PATRON_CEDULA_EC.sub("[CEDULA]", resultado)
     resultado = _PATRON_TARJETA.sub("[TARJETA]", resultado)
     resultado = _PATRON_EMAIL.sub("[EMAIL]", resultado)
     resultado = _PATRON_TELEFONO.sub("[TELEFONO]", resultado)

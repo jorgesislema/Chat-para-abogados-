@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import admin, auth, chat, rutas_admin, rutas_auth, rutas_chat
+from backend.api import admin, auth, chat
 from backend.db.base import Base
 from backend.db.conexion import engine
 
@@ -47,11 +47,13 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
-app.include_router(rutas_auth.router)
 app.include_router(admin.router)
-app.include_router(rutas_admin.router)
 app.include_router(chat.router)
-app.include_router(rutas_chat.router)
+
+
+# Alias en español para compatibilidad con tests y docs (`aplicacion`).
+# El objeto canónico es `app` (convención uvicorn `backend.main:app`).
+aplicacion = app
 
 
 @app.get("/salud", tags=["meta"])

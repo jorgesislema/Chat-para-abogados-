@@ -128,10 +128,12 @@ class GeneradorRespuestaOpenRouter:
         self,
         prompt: str,
         temperatura: float = 0.2,
-        max_tokens: int = 512,
+        max_tokens: int | None = None,
         mensajes_sistema: list[str] | None = None,
     ) -> str:
         """Envia el prompt al LLM sincrono y devuelve el texto de la respuesta."""
+        if max_tokens is None:
+            max_tokens = obtener_configuracion().llm_max_tokens
         mensajes: list[dict[str, str]] = []
         if mensajes_sistema:
             for msj in mensajes_sistema:
@@ -231,17 +233,22 @@ class OrquestadorRAG:
         cliente_llm: AsyncOpenAI | None = None,
         modelo: str | None = None,
         prompt_sistema: str | None = None,
-        temperatura: float = 0.2,
-        max_tokens: int = 512,
-        top_k: int = 5,
+        temperatura: float | None = None,
+        max_tokens: int | None = None,
+        top_k: int | None = None,
         incluir_global: bool = True,
     ) -> None:
         self._motor = motor_vectorial
-        self._modelo = modelo or obtener_configuracion().llm_modelo
+        _cfg = obtener_configuracion()
+        self._modelo = modelo or _cfg.llm_modelo
         self._prompt_sistema = prompt_sistema or PROMPT_SISTEMA_POR_DEFECTO
-        self._temperatura = temperatura
-        self._max_tokens = max_tokens
-        self._top_k = top_k
+        self._temperatura = (
+            _cfg.rag_temperatura_citas if temperatura is None else temperatura
+        )
+        self._max_tokens = (
+            _cfg.llm_max_tokens if max_tokens is None else max_tokens
+        )
+        self._top_k = _cfg.rag_top_k if top_k is None else top_k
         self._incluir_global = incluir_global
 
         if cliente_llm is not None:

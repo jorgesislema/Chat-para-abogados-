@@ -79,3 +79,9 @@ Thumbs.db
 build/
 dist/
 *.whl
+
+# --- Trazabilidad local (bitacora de trabajo de IAs y personas) ---
+trazabilidad/
+
+# --- Inspeccion temporal de ChromaDB (higiene local) ---
+.tmp_chroma_inspect/

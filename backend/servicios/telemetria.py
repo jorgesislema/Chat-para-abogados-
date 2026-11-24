@@ -76,4 +76,33 @@ def formatear_fuentes_para_auditoria(fuentes: list[dict[str, Any]]) -> str:
     return ",".join(i for i in ids if i)
 
 
-__all__ = ["formatear_fuentes_para_auditoria", "guardar_auditoria"]
+def registrar_evento_admin(
+    tenant_id: str,
+    accion: str,
+    detalle: str,
+    actor_usuario_id: int | str = "",
+) -> int:
+    """
+    Audita un cambio del administrador (Fase 1B): crear/editar/borrar
+    usuarios, subir/borrar documentos.
+
+    Reutiliza la tabla `registros_auditoria` con el prefijo `[ADMIN]`
+    en `pregunta_ofuscada` (formato `[ADMIN] <accion> por usuario
+    <id>: <detalle>`). En Fase C se migrara a una tabla propia con
+    columnas `actor`, `accion` y `objetivo`.
+    """
+    return guardar_auditoria(
+        tenant_id=str(tenant_id),
+        pregunta_ofuscada=f"[ADMIN] {accion} por usuario {actor_usuario_id}: {detalle}",
+        respuesta_llm="",
+        fuentes_usadas="",
+        tokens_prompt=0,
+        tokens_completion=0,
+    )
+
+
+__all__ = [
+    "formatear_fuentes_para_auditoria",
+    "guardar_auditoria",
+    "registrar_evento_admin",
+]
